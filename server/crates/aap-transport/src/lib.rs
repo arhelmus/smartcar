@@ -11,5 +11,6 @@
 
 mod codec;
 mod tcp;
+mod tls;
 
 pub use tcp::TcpTransport;

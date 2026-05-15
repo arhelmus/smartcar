@@ -95,31 +95,19 @@ impl<T: Transport> Connection<T> {
 
     // ── TLS handshake ─────────────────────────────────────────────────────────
 
-    /// Exchange `SslHandshake` frames and drive the TLS upgrade.
+    /// Drive the TLS upgrade by delegating entirely to the transport.
     ///
-    /// [`Transport::upgrade_tls`] is currently a `todo!()` in
-    /// `aap-transport`; wrapping the call here means the binary compiles and
-    /// the `todo` panic surfaces at runtime rather than blocking compilation.
+    /// The transport reads the initial `SslHandshake` frame itself and owns
+    /// the full AA TLS frame-exchange loop. After this returns, all subsequent
+    /// [`Transport::recv_frame`] / [`Transport::send_frame`] calls are
+    /// transparently encrypted.
     async fn handshake_tls(&mut self) -> Result<()> {
-        // Receive the head unit's first SslHandshake frame (TLS ClientHello).
-        let frame = self.transport.recv_frame().await?;
-        self.expect_control_msg(&frame.payload, MessageType::SslHandshake)?;
-        debug!("received SslHandshake frame from head unit");
-
-        // Delegate the full TLS state machine to the transport.
-        // upgrade_tls() will feed/drain TLS frames internally; it surfaces any
-        // error (including the current todo!()) as TransportError::Tls.
-        match self.transport.upgrade_tls().await {
-            Ok(()) => {
-                info!("TLS upgrade successful");
-                Ok(())
-            }
-            Err(e) => {
-                // Surface TLS errors as AapError::Transport so callers can handle
-                // or log them consistently.
-                Err(AapError::Transport(e))
-            }
-        }
+        self.transport
+            .upgrade_tls()
+            .await
+            .map_err(AapError::Transport)?;
+        info!("TLS handshake complete");
+        Ok(())
     }
 
     // ── Auth complete ─────────────────────────────────────────────────────────
