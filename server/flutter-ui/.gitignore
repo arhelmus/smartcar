@@ -1,0 +1,11 @@
+# Flutter build artifacts
+build/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+
+# Dart tooling
+*.g.dart
+*.freezed.dart
+doc/api/

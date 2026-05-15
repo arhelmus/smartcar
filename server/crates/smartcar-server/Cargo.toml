@@ -10,8 +10,14 @@ aap-contracts      = { workspace = true }
 aap-core           = { workspace = true }
 aap-transport      = { workspace = true }
 aap-video          = { workspace = true }
+aap-flutter        = { workspace = true, optional = true }
 anyhow             = { workspace = true }
 clap               = { workspace = true }
 tokio              = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[features]
+# Compile in the Flutter Embedded renderer.
+# Requires FLUTTER_ENGINE_LIB_DIR to be set at build time.
+flutter = ["dep:aap-flutter"]

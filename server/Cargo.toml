@@ -6,6 +6,7 @@ members = [
     "crates/aap-transport",
     "crates/aap-core",
     "crates/aap-video",
+    "crates/aap-flutter",
     "crates/smartcar-server",
 ]
 
@@ -22,6 +23,7 @@ aap-proto     = { path = "crates/aap-proto" }
 aap-transport = { path = "crates/aap-transport" }
 aap-core      = { path = "crates/aap-core" }
 aap-video     = { path = "crates/aap-video" }
+aap-flutter   = { path = "crates/aap-flutter" }
 
 # External — pinned majors, agents in W1–W6 may bump minor versions
 async-trait        = "0.1"

@@ -1,0 +1,14 @@
+[package]
+name        = "aap-flutter"
+version     = "0.1.0"
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
+
+[dependencies]
+aap-video   = { path = "../aap-video" }
+bytes       = { workspace = true }
+tracing     = { workspace = true }
+anyhow      = { workspace = true }
+openh264    = "0.6"
+parking_lot = "0.12"

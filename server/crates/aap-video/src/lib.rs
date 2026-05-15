@@ -17,6 +17,8 @@
 
 mod config;
 mod service;
+mod sink;
 
 pub use config::VideoConfig;
 pub use service::VideoService;
+pub use sink::{FrameSink, NullSink};

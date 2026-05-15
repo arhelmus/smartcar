@@ -24,6 +24,7 @@ use tracing::{debug, info, warn};
 
 use aap_contracts::{ChannelId, Frame, FrameFlags, Service, ServiceDescriptor, ServiceError};
 
+use crate::sink::{FrameSink, NullSink};
 use crate::VideoConfig;
 
 // ── AV-channel message IDs (from AVChannelMessageIdsEnum.proto) ──────────────
@@ -52,17 +53,27 @@ const SETUP_STATUS_OK: i32 = 2;
 
 /// Android Auto H.264 video projection service.
 ///
-/// Handles the AV-channel setup/start/stop handshake and accepts raw H.264 NAL
-/// units from the connected phone. In P0 the NAL data is only logged; a real
-/// renderer will be wired in later.
+/// Handles the AV-channel setup/start/stop handshake and forwards raw H.264
+/// NAL units to the configured [`FrameSink`].  By default a [`NullSink`] is
+/// used (NALs are logged and discarded).  Pass a custom sink via
+/// [`VideoService::with_sink`] to plug in a real renderer.
 pub struct VideoService {
     config: VideoConfig,
+    sink: Box<dyn FrameSink>,
 }
 
 impl VideoService {
-    /// Create a new `VideoService` with the given configuration.
+    /// Create a new `VideoService` backed by the no-op [`NullSink`].
     pub fn new(config: VideoConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            sink: Box::new(NullSink),
+        }
+    }
+
+    /// Create a `VideoService` that forwards NAL units to `sink`.
+    pub fn with_sink(config: VideoConfig, sink: Box<dyn FrameSink>) -> Self {
+        Self { config, sink }
     }
 
     /// Build the encoded `AVChannel` descriptor bytes for service discovery.
@@ -211,13 +222,16 @@ impl Service for VideoService {
             }
 
             MSG_AV_MEDIA | MSG_AV_MEDIA_WITH_TIMESTAMP => {
-                // Raw H.264 NAL unit bytes (with or without leading timestamp).
-                // P0: log the byte count only; a renderer will consume these later.
-                debug!(
-                    bytes = payload.len(),
-                    with_timestamp = (message_id == MSG_AV_MEDIA_WITH_TIMESTAMP),
-                    "video: received H.264 NAL unit"
-                );
+                // Strip the leading 8-byte presentation timestamp when present.
+                let (timestamp_us, nal) =
+                    if message_id == MSG_AV_MEDIA_WITH_TIMESTAMP && payload.len() >= 8 {
+                        let ts = u64::from_be_bytes(payload[..8].try_into().unwrap());
+                        (Some(ts), payload.slice(8..))
+                    } else {
+                        (None, payload)
+                    };
+                debug!(bytes = nal.len(), timestamp_us = ?timestamp_us, "video: NAL unit");
+                self.sink.push_nal(timestamp_us, nal);
                 Ok(vec![])
             }
 
