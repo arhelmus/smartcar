@@ -1,6 +1,13 @@
-//! smartcar — Android Auto projection source. Real entrypoint added by W5.
+//! smartcar — Android Auto projection source binary.
+//!
+//! Connects to a head unit over TCP, performs the AA protocol handshake, and
+//! dispatches data frames to the registered services.
 
 use clap::Parser;
+use tokio::net::TcpStream;
+
+use aap_core::{Connection, ServiceRegistry};
+use aap_transport::TcpTransport;
 
 #[derive(Parser, Debug)]
 #[command(name = "smartcar-server", version)]
@@ -10,12 +17,26 @@ struct Args {
     target: String,
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
     let args = Args::parse();
-    tracing::info!(target = %args.target, "smartcar-server stub — no-op");
+
+    tracing::info!(target = %args.target, "connecting to head unit");
+    let stream = TcpStream::connect(&args.target).await?;
+    tracing::info!("TCP connection established");
+
+    let transport = TcpTransport::new(stream);
+
+    // No services registered yet — W6 will add VideoService.
+    let registry = ServiceRegistry::new();
+
+    let conn = Connection::new(transport, registry);
+    conn.run().await?;
+
+    tracing::info!("connection closed cleanly");
     Ok(())
 }

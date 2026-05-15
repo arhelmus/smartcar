@@ -21,6 +21,7 @@ dependencies = [
  "aap-transport",
  "async-trait",
  "bytes",
+ "prost",
  "thiserror",
  "tokio",
  "tracing",
