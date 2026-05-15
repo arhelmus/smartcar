@@ -39,6 +39,33 @@ jobs:
       - run: cargo test --workspace
         working-directory: server
 
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          working-directory: server
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.83
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: "server -> target" }
+      - run: cargo check --workspace
+        working-directory: server
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: server/Cargo.toml
+
   compose-config:
     runs-on: ubuntu-latest
     steps:

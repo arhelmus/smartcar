@@ -1,0 +1,38 @@
+# cargo-deny configuration
+# https://embarkstudios.github.io/cargo-deny/
+
+[licenses]
+# Confidence threshold for license text matching
+confidence-threshold = 0.8
+
+# Allow these licenses (MIT, Apache-2.0, and BSD variants declared in workspace)
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "OpenSSL",
+    "CC0-1.0",
+    "Zlib",
+]
+
+[bans]
+# Deny multiple versions of the same crate to keep the dependency tree lean.
+# Set to "warn" to be less strict during active development.
+multiple-versions = "warn"
+
+[advisories]
+# The path to the advisory database. If not specified, the `rustsec/advisory-db`
+# is fetched from GitHub. In CI this is handled by the audit job; here we
+# surface it in deny too.
+ignore = []
+
+[sources]
+# Only allow crates from crates.io and local paths (no arbitrary git deps).
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
