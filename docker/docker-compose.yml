@@ -1,0 +1,11 @@
+services:
+  openauto:
+    build:
+      context: ..
+      dockerfile: docker/openauto.Dockerfile
+    image: smartcar/openauto:dev
+    network_mode: host
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw

@@ -1,0 +1,46 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.83
+        with: { components: rustfmt }
+      - run: cargo fmt --all -- --check
+        working-directory: server
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.83
+        with: { components: clippy }
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: "server -> target" }
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+        working-directory: server
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.83
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: "server -> target" }
+      - run: cargo test --workspace
+        working-directory: server
+
+  compose-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose -f docker/docker-compose.yml config >/dev/null

@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/aap-contracts",
+    "crates/aap-proto",
+    "crates/aap-transport",
+    "crates/aap-core",
+    "crates/aap-video",
+    "crates/smartcar-server",
+]
+
+[workspace.package]
+edition      = "2021"
+license      = "MIT OR Apache-2.0"
+rust-version = "1.83"
+repository   = "https://github.com/arhelmus/smartcar"
+
+[workspace.dependencies]
+# Internal
+aap-contracts = { path = "crates/aap-contracts" }
+aap-proto     = { path = "crates/aap-proto" }
+aap-transport = { path = "crates/aap-transport" }
+aap-core      = { path = "crates/aap-core" }
+aap-video     = { path = "crates/aap-video" }
+
+# External — pinned majors, agents in W1–W6 may bump minor versions
+async-trait        = "0.1"
+bitflags           = "2"
+bytes              = "1"
+thiserror          = "1"
+anyhow             = "1"
+tokio              = { version = "1", features = ["full"] }
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap               = { version = "4", features = ["derive"] }
+prost              = "0.13"
+prost-build        = "0.13"
+openssl            = "0.10"
+
+[profile.release]
+lto      = "thin"
+codegen-units = 1
+strip    = "symbols"

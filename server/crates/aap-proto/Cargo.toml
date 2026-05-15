@@ -1,0 +1,14 @@
+[package]
+name        = "aap-proto"
+version     = "0.1.0"
+edition.workspace      = true
+license.workspace      = true
+rust-version.workspace = true
+
+[dependencies]
+aap-contracts = { workspace = true }
+prost         = { workspace = true }
+bytes         = { workspace = true }
+
+[build-dependencies]
+prost-build   = { workspace = true }

@@ -1,0 +1,9 @@
+[submodule "server/third_party/aasdk"]
+	path = server/third_party/aasdk
+	url = https://github.com/opencardev/aasdk
+[submodule "server/third_party/openauto"]
+	path = server/third_party/openauto
+	url = https://github.com/opencardev/openauto
+[submodule "server/third_party/AAProto"]
+	path = server/third_party/AAProto
+	url = https://github.com/opencardev/AAProto
