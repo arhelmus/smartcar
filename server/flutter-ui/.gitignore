@@ -9,3 +9,8 @@ build/
 *.g.dart
 *.freezed.dart
 doc/api/
+
+# IDE / tooling artefacts
+*.iml
+*.log
+.idea/
