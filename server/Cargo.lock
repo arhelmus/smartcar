@@ -58,6 +58,7 @@ dependencies = [
  "aap-proto",
  "async-trait",
  "bytes",
+ "prost",
  "thiserror",
  "tokio",
  "tracing",

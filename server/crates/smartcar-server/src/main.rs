@@ -8,6 +8,7 @@ use tokio::net::TcpStream;
 
 use aap_core::{Connection, ServiceRegistry};
 use aap_transport::TcpTransport;
+use aap_video::{VideoConfig, VideoService};
 
 #[derive(Parser, Debug)]
 #[command(name = "smartcar-server", version)]
@@ -31,8 +32,8 @@ async fn main() -> anyhow::Result<()> {
 
     let transport = TcpTransport::new(stream);
 
-    // No services registered yet — W6 will add VideoService.
-    let registry = ServiceRegistry::new();
+    let mut registry = ServiceRegistry::new();
+    registry.register(VideoService::new(VideoConfig::default()));
 
     let conn = Connection::new(transport, registry);
     conn.run().await?;
