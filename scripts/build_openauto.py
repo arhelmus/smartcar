@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
-"""run_openauto_native.py — build and/or launch openauto as a native macOS binary.
+"""build_openauto.py — build aasdk + openauto from source inside the Nix shell.
 
 Must be run inside the repo's Nix shell:
 
-    nix-shell --pure --run "python3 scripts/run_openauto_native.py [--rebuild]"
-
-Or enter the shell first:
-
-    nix-shell --pure
-    python3 scripts/run_openauto_native.py [--rebuild]
+    nix-shell --pure --run "python3 scripts/build_openauto.py [--rebuild]"
 """
 
 import argparse
@@ -57,7 +52,7 @@ def _check_nix() -> bool:
             "Enter the shell first:\n"
             "  nix-shell --pure\n"
             "or run directly:\n"
-            "  nix-shell --pure --run 'python3 scripts/run_openauto_native.py'",
+            "  nix-shell --pure --run 'python3 scripts/build_openauto.py'",
             file=sys.stderr,
         )
         return False
@@ -82,8 +77,7 @@ def _check_submodules() -> bool:
 def _apply_patches() -> None:
     """Apply all .patch files from PATCHES_DIR to the openauto source tree.
 
-    Each patch is applied with --check first; if it fails the patch is already
-    applied (idempotent), so we skip it silently.
+    Uses --check first; if the patch is already applied, skips silently.
     """
     for patch in sorted(PATCHES_DIR.glob("*.patch")):
         check = subprocess.run(
@@ -95,11 +89,7 @@ def _apply_patches() -> None:
             print(f"Patch already applied (skipping): {patch.name}", file=sys.stderr)
             continue
         print(f"Applying patch: {patch.name}", file=sys.stderr)
-        subprocess.run(
-            ["git", "apply", str(patch)],
-            cwd=str(OPENAUTO_DIR),
-            check=True,
-        )
+        subprocess.run(["git", "apply", str(patch)], cwd=str(OPENAUTO_DIR), check=True)
 
 
 def _blkid_flags() -> List[str]:
@@ -130,8 +120,7 @@ _FINDER_OVERRIDES: List[str] = [
     f"-DAASDK_LIB_DIR={INSTALL_PREFIX}/lib/libaasdk.a",
 ]
 
-
-# ── Public build / run API ─────────────────────────────────────────────────────
+# ── Public API ─────────────────────────────────────────────────────────────────
 
 def build_openauto(rebuild: bool = False) -> None:
     """Build aasdk + openauto from source inside the active Nix shell."""
@@ -192,36 +181,6 @@ def build_openauto(rebuild: bool = False) -> None:
     _run(["cmake", "--build", str(OPENAUTO_BUILD), f"-j{jobs}"])
 
 
-def run_openauto() -> int:
-    """Ensure the binary exists, free the port if needed, then launch."""
-    if not AUTOAPP.exists():
-        print("Binary not found — building …", file=sys.stderr)
-        build_openauto()
-
-    # Kill any process already holding the port.
-    lsof = subprocess.run(
-        ["lsof", "-ti", f"TCP:{OPENAUTO_TCP_PORT}", "-sTCP:LISTEN"],
-        capture_output=True, text=True,
-    )
-    for pid in lsof.stdout.split():
-        print(f"Killing PID {pid} on port {OPENAUTO_TCP_PORT} …", file=sys.stderr)
-        subprocess.run(["kill", pid])
-
-    print(f"Launching {AUTOAPP} …", file=sys.stderr)
-    proc = subprocess.Popen([str(AUTOAPP)], cwd=str(OPENAUTO_DIR))
-    try:
-        proc.wait()
-    except KeyboardInterrupt:
-        print("\nInterrupted — stopping …", file=sys.stderr)
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-
-    return 0 if proc.returncode in (0, -15) else proc.returncode
-
-
 # ── CLI entry point ────────────────────────────────────────────────────────────
 
 def main() -> int:
@@ -229,21 +188,12 @@ def main() -> int:
         print("This script only runs on macOS.", file=sys.stderr)
         return 1
 
-    parser = argparse.ArgumentParser(
-        description="Build (if needed) and run openauto inside the Nix shell.",
-    )
+    parser = argparse.ArgumentParser(description="Build aasdk + openauto inside the Nix shell.")
     parser.add_argument("--rebuild", action="store_true", help="Force a clean rebuild.")
-    parser.add_argument("--build-only", action="store_true", help="Build without launching.")
     args = parser.parse_args()
 
-    if args.rebuild or args.build_only:
-        if not _check_nix():
-            return 1
-        build_openauto(rebuild=args.rebuild)
-        if args.build_only:
-            return 0
-
-    return run_openauto()
+    build_openauto(rebuild=args.rebuild)
+    return 0
 
 
 if __name__ == "__main__":
