@@ -22,7 +22,7 @@ use openssl::hash::MessageDigest;
 use openssl::pkey::PKey;
 use openssl::rsa::Rsa;
 use openssl::ssl::{SslContext, SslMethod, SslOptions, SslStream, SslVerifyMode};
-use openssl::x509::{X509, X509NameBuilder};
+use openssl::x509::{X509NameBuilder, X509};
 
 use aap_contracts::TransportError;
 
@@ -103,19 +103,18 @@ pub(crate) type TlsSession = SslStream<BioAdapter>;
 /// Android Auto does not verify the phone's certificate, so a fresh ephemeral
 /// cert is fine and avoids any on-disk key-management complexity.
 fn generate_self_signed_cert() -> Result<(X509, PKey<openssl::pkey::Private>), TransportError> {
-    let rsa = Rsa::generate(2048)
-        .map_err(|e| TransportError::Tls(format!("RSA keygen: {e}")))?;
-    let key = PKey::from_rsa(rsa)
-        .map_err(|e| TransportError::Tls(format!("PKey::from_rsa: {e}")))?;
+    let rsa = Rsa::generate(2048).map_err(|e| TransportError::Tls(format!("RSA keygen: {e}")))?;
+    let key =
+        PKey::from_rsa(rsa).map_err(|e| TransportError::Tls(format!("PKey::from_rsa: {e}")))?;
 
-    let mut name = X509NameBuilder::new()
-        .map_err(|e| TransportError::Tls(format!("X509NameBuilder: {e}")))?;
+    let mut name =
+        X509NameBuilder::new().map_err(|e| TransportError::Tls(format!("X509NameBuilder: {e}")))?;
     name.append_entry_by_text("CN", "Smartcar AA")
         .map_err(|e| TransportError::Tls(format!("X509Name append CN: {e}")))?;
     let name = name.build();
 
-    let mut builder = X509::builder()
-        .map_err(|e| TransportError::Tls(format!("X509::builder: {e}")))?;
+    let mut builder =
+        X509::builder().map_err(|e| TransportError::Tls(format!("X509::builder: {e}")))?;
     builder
         .set_version(2)
         .map_err(|e| TransportError::Tls(format!("set_version: {e}")))?;

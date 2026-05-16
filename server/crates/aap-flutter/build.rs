@@ -65,7 +65,11 @@ fn main() {
     // built.
     copy_bundle_to_target(
         Path::new(&assets_dir),
-        if icu_data.is_empty() { None } else { Some(Path::new(&icu_data)) },
+        if icu_data.is_empty() {
+            None
+        } else {
+            Some(Path::new(&icu_data))
+        },
     );
 }
 
@@ -124,7 +128,10 @@ fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 fn watch_flutter_sources(flutter_project: &Path) {
     for file in ["pubspec.yaml", "pubspec.lock"] {
-        println!("cargo:rerun-if-changed={}", flutter_project.join(file).display());
+        println!(
+            "cargo:rerun-if-changed={}",
+            flutter_project.join(file).display()
+        );
     }
 
     let lib_dir = flutter_project.join("lib");

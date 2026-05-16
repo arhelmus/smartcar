@@ -11,13 +11,13 @@
 //! A future step will blit to a KMS/DRM plane or `/dev/fb0`.
 
 use std::ffi::CString;
+use std::os::raw::c_void;
 use std::path::Path;
 use std::sync::atomic::{AtomicPtr, Ordering};
-use std::os::raw::c_void;
 
 use anyhow::Context as _;
 
-use crate::ffi::{self, FlutterEngine, FlutterRendererConfig, FlutterProjectArgs};
+use crate::ffi::{self, FlutterEngine, FlutterProjectArgs, FlutterRendererConfig};
 use crate::texture::SharedPixelStore;
 
 // ── Callback data ─────────────────────────────────────────────────────────────
@@ -51,7 +51,11 @@ unsafe extern "C" fn surface_present_callback(
     row_bytes: usize,
     height: usize,
 ) -> bool {
-    tracing::trace!(row_bytes, height, "flutter: software frame composed (discarded in P0)");
+    tracing::trace!(
+        row_bytes,
+        height,
+        "flutter: software frame composed (discarded in P0)"
+    );
     true
 }
 
@@ -99,8 +103,11 @@ impl FlutterEngineHandle {
                 .to_str()
                 .context("assets_dir is not valid UTF-8")?,
         )?;
-        let icu_cstr =
-            CString::new(icu_data.to_str().context("icu_data path is not valid UTF-8")?)?;
+        let icu_cstr = CString::new(
+            icu_data
+                .to_str()
+                .context("icu_data path is not valid UTF-8")?,
+        )?;
 
         let data = Box::new(EngineCallbackData {
             store,
@@ -160,11 +167,12 @@ impl FlutterEngineHandle {
     /// into the [`SharedPixelStore`].  Thread-safe; the engine API is
     /// documented to allow calls from any thread.
     pub fn mark_texture_dirty(&self) {
-        let rc = unsafe {
-            ffi::FlutterEngineMarkExternalTextureFrameAvailable(self.engine.0, 0)
-        };
+        let rc = unsafe { ffi::FlutterEngineMarkExternalTextureFrameAvailable(self.engine.0, 0) };
         if rc != ffi::kSuccess {
-            tracing::warn!(code = rc, "FlutterEngineMarkExternalTextureFrameAvailable failed");
+            tracing::warn!(
+                code = rc,
+                "FlutterEngineMarkExternalTextureFrameAvailable failed"
+            );
         }
     }
 }

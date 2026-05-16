@@ -9,7 +9,7 @@ use aap_video::FrameSink;
 
 use crate::decoder::H264Decoder;
 use crate::engine::FlutterEngineHandle;
-use crate::texture::{self, SharedPixelStore, PixelStore};
+use crate::texture::{self, PixelStore, SharedPixelStore};
 
 /// Decodes Android Auto H.264 video and renders it via Flutter's external
 /// texture API.
@@ -36,7 +36,11 @@ impl FlutterSink {
         let store = texture::new_store();
         let engine = FlutterEngineHandle::launch(assets_dir, icu_data, store.clone())?;
         let decoder = H264Decoder::new()?;
-        Ok(Self { decoder, store, engine })
+        Ok(Self {
+            decoder,
+            store,
+            engine,
+        })
     }
 }
 

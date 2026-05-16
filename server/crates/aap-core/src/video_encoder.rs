@@ -42,9 +42,9 @@ impl TestFrameEncoder {
     fn make_yuv(&self) -> YUVBuffer {
         // Color cycle: Red, Green, Blue — switch every 90 frames (~3 s at 30 fps).
         let (y, u, v): (u8, u8, u8) = match (self.frame_count / 90) % 3 {
-            0 => (76, 84, 255),   // Red
-            1 => (150, 44, 21),   // Green
-            _ => (29, 255, 107),  // Blue
+            0 => (76, 84, 255),  // Red
+            1 => (150, 44, 21),  // Green
+            _ => (29, 255, 107), // Blue
         };
         let n_luma = VIDEO_WIDTH * VIDEO_HEIGHT;
         let n_chroma = n_luma / 4;

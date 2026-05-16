@@ -159,7 +159,10 @@ impl Service for VideoService {
             MSG_MEDIA_CONFIG => {
                 // Head unit sends MEDIA_MESSAGE_CONFIG after we send MEDIA_MESSAGE_SETUP.
                 // Respond with MEDIA_MESSAGE_START to begin the video session.
-                info!(payload_len = payload.len(), "video: received Config — sending Start");
+                info!(
+                    payload_len = payload.len(),
+                    "video: received Config — sending Start"
+                );
                 // Start proto: { session_id(varint,f1)=1, configuration_index(varint,f2)=0 }
                 let body = Bytes::from_static(&[0x08, 0x01, 0x10, 0x00]);
                 Ok(vec![Self::build_frame(MSG_MEDIA_START, body)])
@@ -179,7 +182,10 @@ impl Service for VideoService {
             }
 
             unknown => {
-                warn!(message_id = unknown, "video: unsupported message id; dropping");
+                warn!(
+                    message_id = unknown,
+                    "video: unsupported message id; dropping"
+                );
                 Ok(vec![])
             }
         }
@@ -215,7 +221,11 @@ mod tests {
         let config_body = Bytes::from_static(&[0x08, 0x02, 0x10, 0x01, 0x18, 0x00]);
         let frames = service.handle(MSG_MEDIA_CONFIG, config_body).await.unwrap();
 
-        assert_eq!(frames.len(), 1, "config must elicit exactly one Start frame");
+        assert_eq!(
+            frames.len(),
+            1,
+            "config must elicit exactly one Start frame"
+        );
         let frame = &frames[0];
         assert_eq!(frame.channel, ChannelId::Video);
 

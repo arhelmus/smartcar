@@ -80,7 +80,10 @@ fn build_flutter_video_service() -> anyhow::Result<VideoService> {
     let (assets, icu) = resolve_flutter_paths();
     tracing::info!(?assets, ?icu, "starting Flutter engine");
     let sink = FlutterSink::new(&assets, &icu)?;
-    Ok(VideoService::with_sink(VideoConfig::default(), Box::new(sink)))
+    Ok(VideoService::with_sink(
+        VideoConfig::default(),
+        Box::new(sink),
+    ))
 }
 
 #[cfg(not(feature = "flutter"))]

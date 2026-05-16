@@ -14,7 +14,9 @@ use tracing::{debug, info, warn};
 use aap_contracts::{AapError, Result};
 use aap_contracts::{ChannelId, FrameFlags, MessageType, Transport};
 
-use crate::control::{build_data_frame, encode_control, encode_control_on, parse_message_type, proto_body};
+use crate::control::{
+    build_data_frame, encode_control, encode_control_on, parse_message_type, proto_body,
+};
 use crate::registry::ServiceRegistry;
 use crate::video_encoder::{TestFrameEncoder, VIDEO_HEIGHT, VIDEO_WIDTH};
 
@@ -75,7 +77,11 @@ impl<T: Transport> Connection<T> {
     pub fn new(transport: T, registry: ServiceRegistry) -> Self {
         let video_encoder = match TestFrameEncoder::new() {
             Ok(enc) => {
-                info!(width = VIDEO_WIDTH, height = VIDEO_HEIGHT, "video encoder ready");
+                info!(
+                    width = VIDEO_WIDTH,
+                    height = VIDEO_HEIGHT,
+                    "video encoder ready"
+                );
                 Some(enc)
             }
             Err(e) => {
@@ -219,7 +225,10 @@ impl<T: Transport> Connection<T> {
             let ch = match ChannelId::try_from(channel_id as u8) {
                 Ok(ch) => ch,
                 Err(_) => {
-                    warn!(channel = channel_id, "unknown channel ID from service discovery; skipping");
+                    warn!(
+                        channel = channel_id,
+                        "unknown channel ID from service discovery; skipping"
+                    );
                     continue;
                 }
             };
@@ -276,8 +285,14 @@ impl<T: Transport> Connection<T> {
         // ── Audio channels ───────────────────────────────────────────────────
         for (ch_id, channel) in [
             (ChannelId::MediaAudio.as_u8() as u32, ChannelId::MediaAudio),
-            (ChannelId::SpeechAudio.as_u8() as u32, ChannelId::SpeechAudio),
-            (ChannelId::SystemAudio.as_u8() as u32, ChannelId::SystemAudio),
+            (
+                ChannelId::SpeechAudio.as_u8() as u32,
+                ChannelId::SpeechAudio,
+            ),
+            (
+                ChannelId::SystemAudio.as_u8() as u32,
+                ChannelId::SystemAudio,
+            ),
         ] {
             if has(ch_id) {
                 info!(?channel, "audio: sending channel setup (PCM)");
@@ -469,8 +484,7 @@ impl<T: Transport> Connection<T> {
                     _ => {
                         warn!(
                             ?channel,
-                            message_id,
-                            "no service registered for channel; dropping frame"
+                            message_id, "no service registered for channel; dropping frame"
                         );
                     }
                 }
@@ -524,7 +538,8 @@ impl<T: Transport> Connection<T> {
                 self.transport.send_frame(start_frame).await?;
                 // VideoFocusRequest { mode=1 (PROJECTION) }
                 let focus_body = Bytes::from_static(&[0x08, 0x01]);
-                let focus_frame = build_data_frame(ChannelId::Video, MSG_VIDEO_FOCUS_REQUEST, focus_body);
+                let focus_frame =
+                    build_data_frame(ChannelId::Video, MSG_VIDEO_FOCUS_REQUEST, focus_body);
                 self.transport.send_frame(focus_frame).await?;
             }
             other => {
@@ -549,7 +564,10 @@ impl<T: Transport> Connection<T> {
                 self.transport.send_frame(frame).await?;
             }
             other => {
-                debug!(?channel, other, "audio sink: unhandled message id; dropping");
+                debug!(
+                    ?channel,
+                    other, "audio sink: unhandled message id; dropping"
+                );
             }
         }
         Ok(())

@@ -5,7 +5,12 @@
 //! the full surface:
 //! <https://github.com/flutter/engine/blob/main/shell/platform/embedder/flutter_embedder.h>
 
-#![allow(non_camel_case_types, non_snake_case, non_upper_case_globals, dead_code)]
+#![allow(
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    dead_code
+)]
 
 use std::os::raw::{c_char, c_int, c_void};
 
@@ -75,7 +80,10 @@ impl FlutterRendererConfig {
         };
         // Safety: FlutterSoftwareRendererConfig (16 bytes) fits within _union (512 bytes).
         unsafe {
-            std::ptr::write(cfg._union.as_mut_ptr() as *mut FlutterSoftwareRendererConfig, sw);
+            std::ptr::write(
+                cfg._union.as_mut_ptr() as *mut FlutterSoftwareRendererConfig,
+                sw,
+            );
         }
         cfg
     }
