@@ -15,3 +15,7 @@ server/certs/*.key
 server/certs/*.crt
 server/certs/*.pem
 !server/certs/.gitkeep
+
+# run_server detached-mode artifacts
+.smartcar-server.pid
+smartcar-server.log
