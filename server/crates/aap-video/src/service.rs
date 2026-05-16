@@ -1,22 +1,21 @@
 //! `VideoService` — Android Auto H.264 video channel implementation.
 //!
-//! # AV-channel message IDs
+//! # Video channel message flow
 //!
-//! Values are taken from `AVChannelMessageIdsEnum.proto` in `third_party/AAProto`:
+//! After the channel is opened the phone (us) initiates the AV setup:
 //!
 //! ```text
-//! AV_MEDIA_WITH_TIMESTAMP_INDICATION = 0x0000
-//! AV_MEDIA_INDICATION                = 0x0001
-//! SETUP_REQUEST                      = 0x8000
-//! START_INDICATION                   = 0x8001
-//! STOP_INDICATION                    = 0x8002
-//! SETUP_RESPONSE                     = 0x8003
-//! AV_MEDIA_ACK_INDICATION            = 0x8004
-//! AV_INPUT_OPEN_REQUEST              = 0x8005
-//! AV_INPUT_OPEN_RESPONSE             = 0x8006
-//! VIDEO_FOCUS_REQUEST                = 0x8007
-//! VIDEO_FOCUS_INDICATION             = 0x8008
+//! Phone → HU : MEDIA_MESSAGE_SETUP         (0x8000)  codec=H264_BP
+//! HU    → Phone : MEDIA_MESSAGE_CONFIG     (0x8003)  status=ready, max_unacked
+//! HU    → Phone : MEDIA_MESSAGE_VIDEO_FOCUS_NOTIFICATION (0x8008) focus=projected
+//! Phone → HU : MEDIA_MESSAGE_START         (0x8001)  session_id, config_index
+//! Phone → HU : MEDIA_MESSAGE_DATA          (0x0000)  H.264 NAL units (with timestamp)
+//! HU    → Phone : MEDIA_MESSAGE_ACK        (0x8004)  flow control
 //! ```
+//!
+//! `VideoService` handles the **incoming** messages (HU → Phone): CONFIG, ACK,
+//! and VIDEO_FOCUS_NOTIFICATION.  The SETUP and START are sent by
+//! `Connection::post_channel_init` and the dispatch loop respectively.
 
 use async_trait::async_trait;
 use bytes::{BufMut, Bytes, BytesMut};
@@ -27,27 +26,16 @@ use aap_contracts::{ChannelId, Frame, FrameFlags, Service, ServiceDescriptor, Se
 use crate::sink::{FrameSink, NullSink};
 use crate::VideoConfig;
 
-// ── AV-channel message IDs (from AVChannelMessageIdsEnum.proto) ──────────────
+// ── Media message IDs for the video channel (MediaMessageId.proto) ────────────
 
-/// Raw H.264 NAL data with a leading timestamp field.
-const MSG_AV_MEDIA_WITH_TIMESTAMP: u16 = 0x0000;
-/// Raw H.264 NAL data without a timestamp.
-const MSG_AV_MEDIA: u16 = 0x0001;
-/// Head unit → phone: request AV-channel setup.
-const MSG_SETUP_REQUEST: u16 = 0x8000;
-/// Head unit → phone: start streaming.
-const MSG_START_INDICATION: u16 = 0x8001;
-/// Head unit → phone: stop streaming.
-const MSG_STOP_INDICATION: u16 = 0x8002;
-/// Phone → head unit: setup acknowledgement.
-const MSG_SETUP_RESPONSE: u16 = 0x8003;
-/// Head unit → phone: flow-control acknowledgement.
-const MSG_AV_MEDIA_ACK: u16 = 0x8004;
-
-// ── AVChannelSetupStatus enum values (from AVChannelSetupStatusEnum.proto) ───
-
-/// `AVChannelSetupStatus::OK = 2`
-const SETUP_STATUS_OK: i32 = 2;
+/// HU → Phone: setup complete, contains codec config.
+const MSG_MEDIA_CONFIG: u16 = 0x8003;
+/// Phone → HU: start streaming (sent in response to CONFIG).
+const MSG_MEDIA_START: u16 = 0x8001;
+/// HU → Phone: flow-control acknowledgement for a video frame.
+const MSG_MEDIA_ACK: u16 = 0x8004;
+/// HU → Phone: video focus notification (e.g., focus=projected after setup).
+const MSG_VIDEO_FOCUS_NOTIFICATION: u16 = 0x8008;
 
 // ── VideoService ─────────────────────────────────────────────────────────────
 
@@ -59,6 +47,8 @@ const SETUP_STATUS_OK: i32 = 2;
 /// [`VideoService::with_sink`] to plug in a real renderer.
 pub struct VideoService {
     config: VideoConfig,
+    /// Sink for outbound NAL units — used when video sending is implemented.
+    #[allow(dead_code)]
     sink: Box<dyn FrameSink>,
 }
 
@@ -134,34 +124,7 @@ impl VideoService {
         Bytes::from(buf)
     }
 
-    /// Encode an `AVChannelSetupResponse` protobuf body by hand.
-    ///
-    /// The AV channel setup/start messages are not included in `aap-proto`'s
-    /// generated types (they were not compiled in W1), so we encode the minimal
-    /// protobuf fields directly.
-    ///
-    /// `AVChannelSetupResponse` fields:
-    ///   field 1 (varint): `media_status` — `AVChannelSetupStatus::OK = 2`
-    ///   field 2 (varint): `max_unacked`  — 1
-    ///   field 3 (varint, repeated): `configs` — [0]
-    fn encode_setup_response() -> Bytes {
-        let mut buf = BytesMut::new();
-        // field 1: media_status = OK (2) — tag = (1 << 3) | 0 = 0x08
-        buf.put_u8(0x08);
-        buf.put_u8(SETUP_STATUS_OK as u8);
-        // field 2: max_unacked = 1 — tag = (2 << 3) | 0 = 0x10
-        buf.put_u8(0x10);
-        buf.put_u8(1u8);
-        // field 3: configs[0] = 0 — tag = (3 << 3) | 0 = 0x18
-        buf.put_u8(0x18);
-        buf.put_u8(0u8);
-        buf.freeze()
-    }
-
     /// Build a video-channel data frame with the given `message_id` and `body`.
-    ///
-    /// Video channel frames are data frames (no `CONTROL` flag) with the
-    /// two-byte message_id prepended to the protobuf body.
     fn build_frame(message_id: u16, body: Bytes) -> Frame {
         let mut payload = BytesMut::with_capacity(2 + body.len());
         payload.put_u16(message_id);
@@ -193,51 +156,31 @@ impl Service for VideoService {
         payload: Bytes,
     ) -> Result<Vec<Frame>, ServiceError> {
         match message_id {
-            MSG_SETUP_REQUEST => {
-                // The head unit sends AVChannelSetupRequest { config_index: u32 }.
-                // We acknowledge with SETUP_RESPONSE carrying status=OK.
-                debug!(payload_len = payload.len(), "video: received SetupRequest");
-                info!("video: channel setup — sending SetupResponse OK");
-                let body = Self::encode_setup_response();
-                Ok(vec![Self::build_frame(MSG_SETUP_RESPONSE, body)])
+            MSG_MEDIA_CONFIG => {
+                // Head unit sends MEDIA_MESSAGE_CONFIG after we send MEDIA_MESSAGE_SETUP.
+                // Respond with MEDIA_MESSAGE_START to begin the video session.
+                info!(payload_len = payload.len(), "video: received Config — sending Start");
+                // Start proto: { session_id(varint,f1)=1, configuration_index(varint,f2)=0 }
+                let body = Bytes::from_static(&[0x08, 0x01, 0x10, 0x00]);
+                Ok(vec![Self::build_frame(MSG_MEDIA_START, body)])
             }
 
-            MSG_START_INDICATION => {
-                // AVChannelStartIndication { session, config }
-                // No reply required; just log and transition to streaming.
-                info!("video: received StartIndication — streaming active");
+            MSG_VIDEO_FOCUS_NOTIFICATION => {
+                // Head unit grants video focus (e.g., VIDEO_FOCUS_PROJECTED) after setup.
+                // No reply required.
+                info!("video: received VideoFocusNotification — projection active");
                 Ok(vec![])
             }
 
-            MSG_STOP_INDICATION => {
-                // AVChannelStopIndication (empty body)
-                info!("video: received StopIndication — streaming stopped");
-                Ok(vec![])
-            }
-
-            MSG_AV_MEDIA_ACK => {
-                // Flow-control acknowledgement from the head unit.
+            MSG_MEDIA_ACK => {
+                // Flow-control acknowledgement from the head unit for a sent video frame.
                 debug!("video: received MediaAck");
                 Ok(vec![])
             }
 
-            MSG_AV_MEDIA | MSG_AV_MEDIA_WITH_TIMESTAMP => {
-                // Strip the leading 8-byte presentation timestamp when present.
-                let (timestamp_us, nal) =
-                    if message_id == MSG_AV_MEDIA_WITH_TIMESTAMP && payload.len() >= 8 {
-                        let ts = u64::from_be_bytes(payload[..8].try_into().unwrap());
-                        (Some(ts), payload.slice(8..))
-                    } else {
-                        (None, payload)
-                    };
-                debug!(bytes = nal.len(), timestamp_us = ?timestamp_us, "video: NAL unit");
-                self.sink.push_nal(timestamp_us, nal);
-                Ok(vec![])
-            }
-
             unknown => {
-                warn!(message_id = unknown, "video: unsupported message id");
-                Err(ServiceError::UnsupportedMessage(unknown))
+                warn!(message_id = unknown, "video: unsupported message id; dropping");
+                Ok(vec![])
             }
         }
     }
@@ -249,7 +192,7 @@ impl Service for VideoService {
 mod tests {
     use bytes::Bytes;
 
-    use aap_contracts::{ChannelId, ServiceError};
+    use aap_contracts::ChannelId;
 
     use super::*;
     use crate::VideoConfig;
@@ -265,42 +208,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_unknown_message_returns_error() {
+    async fn handle_config_sends_start() {
         let mut service = make_service();
-        let result = service.handle(0xDEAD, Bytes::new()).await;
-        assert!(matches!(
-            result,
-            Err(ServiceError::UnsupportedMessage(0xDEAD))
-        ));
-    }
+        // Simulate MEDIA_MESSAGE_CONFIG from head unit.
+        // Config proto: { status=READY(2), max_unacked=1, config_indices=[0] }
+        let config_body = Bytes::from_static(&[0x08, 0x02, 0x10, 0x01, 0x18, 0x00]);
+        let frames = service.handle(MSG_MEDIA_CONFIG, config_body).await.unwrap();
 
-    #[tokio::test]
-    async fn handle_setup_request_returns_response() {
-        let mut service = make_service();
-        // Simulate an AVChannelSetupRequest body (config_index=0, encoded as
-        // protobuf varint field 1 = 0: tag 0x08, value 0x00).
-        let setup_req_body = Bytes::from_static(&[0x08, 0x00]);
-        let frames = service
-            .handle(MSG_SETUP_REQUEST, setup_req_body)
-            .await
-            .unwrap();
-
-        assert_eq!(frames.len(), 1, "expected exactly one response frame");
+        assert_eq!(frames.len(), 1, "config must elicit exactly one Start frame");
         let frame = &frames[0];
         assert_eq!(frame.channel, ChannelId::Video);
 
-        // The first two bytes of the payload must be MSG_SETUP_RESPONSE.
+        // First two bytes must be MSG_MEDIA_START (0x8001).
         assert!(frame.payload.len() >= 2);
-        let resp_id = u16::from_be_bytes([frame.payload[0], frame.payload[1]]);
-        assert_eq!(resp_id, MSG_SETUP_RESPONSE);
+        let msg_id = u16::from_be_bytes([frame.payload[0], frame.payload[1]]);
+        assert_eq!(msg_id, MSG_MEDIA_START);
+    }
 
-        // The body must start with field 1 = SETUP_STATUS_OK (2).
-        assert!(
-            frame.payload.len() >= 4,
-            "response body must carry at least media_status"
-        );
-        // tag 0x08 = field 1, varint; value = 2 (OK)
-        assert_eq!(frame.payload[2], 0x08);
-        assert_eq!(frame.payload[3], SETUP_STATUS_OK as u8);
+    #[tokio::test]
+    async fn handle_video_focus_notification_is_no_op() {
+        let mut service = make_service();
+        let frames = service
+            .handle(MSG_VIDEO_FOCUS_NOTIFICATION, Bytes::new())
+            .await
+            .unwrap();
+        assert!(frames.is_empty());
+    }
+
+    #[tokio::test]
+    async fn handle_ack_is_no_op() {
+        let mut service = make_service();
+        let frames = service.handle(MSG_MEDIA_ACK, Bytes::new()).await.unwrap();
+        assert!(frames.is_empty());
+    }
+
+    #[tokio::test]
+    async fn handle_unknown_message_drops_gracefully() {
+        let mut service = make_service();
+        let result = service.handle(0xDEAD, Bytes::new()).await;
+        // Should succeed (no error) but return no frames.
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
     }
 }

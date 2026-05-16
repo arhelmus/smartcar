@@ -166,13 +166,15 @@ mod tests {
     fn channel_id_roundtrip() {
         let cases = [
             ChannelId::Control,
-            ChannelId::Input,
             ChannelId::Sensor,
+            ChannelId::MediaSink,
             ChannelId::Video,
             ChannelId::MediaAudio,
             ChannelId::SpeechAudio,
             ChannelId::SystemAudio,
-            ChannelId::AvInput,
+            ChannelId::TelephonyAudio,
+            ChannelId::InputSource,
+            ChannelId::Microphone,
             ChannelId::Bluetooth,
             ChannelId::None,
         ];

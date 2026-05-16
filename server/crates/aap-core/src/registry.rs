@@ -104,10 +104,10 @@ mod tests {
     fn get_mut_returns_correct_service() {
         let mut registry = ServiceRegistry::new();
         registry.register(MockService {
-            channel: ChannelId::Input,
+            channel: ChannelId::Sensor,
         });
 
-        assert!(registry.get_mut(ChannelId::Input).is_some());
+        assert!(registry.get_mut(ChannelId::Sensor).is_some());
         assert!(registry.get_mut(ChannelId::Video).is_none());
     }
 
@@ -115,10 +115,10 @@ mod tests {
     fn register_replaces_existing() {
         let mut registry = ServiceRegistry::new();
         registry.register(MockService {
-            channel: ChannelId::Sensor,
+            channel: ChannelId::MediaSink,
         });
         registry.register(MockService {
-            channel: ChannelId::Sensor,
+            channel: ChannelId::MediaSink,
         });
         assert_eq!(registry.descriptors().len(), 1);
     }

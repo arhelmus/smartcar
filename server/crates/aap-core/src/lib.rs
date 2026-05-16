@@ -27,6 +27,7 @@
 mod connection;
 mod control;
 mod registry;
+mod video_encoder;
 
 pub use connection::Connection;
 pub use registry::ServiceRegistry;

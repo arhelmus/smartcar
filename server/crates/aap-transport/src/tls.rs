@@ -7,19 +7,22 @@
 //! - [`BioAdapter`] — an in-memory `Read + Write` adapter that lets OpenSSL
 //!   operate against byte buffers instead of a socket.
 //! - [`TlsSession`] — type alias for the completed `SslStream<BioAdapter>`.
-//! - [`load_or_generate_cert`] / [`build_ssl_context`] — certificate helpers.
+//! - [`build_ssl_server_context`] — TLS server context for the phone side.
+//!
+//! In the Android Auto protocol the **phone is the TLS server**: the head unit
+//! (openauto) initiates TLS as the client and sends ClientHello first. The
+//! phone generates an ephemeral self-signed certificate; the head unit does
+//! not verify it.
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
-use std::path::Path;
 
 use openssl::asn1::Asn1Time;
-use openssl::bn::BigNum;
 use openssl::hash::MessageDigest;
-use openssl::pkey::{PKey, Private};
+use openssl::pkey::PKey;
 use openssl::rsa::Rsa;
-use openssl::ssl::{SslContext, SslMethod, SslStream, SslVerifyMode};
-use openssl::x509::{X509NameBuilder, X509};
+use openssl::ssl::{SslContext, SslMethod, SslOptions, SslStream, SslVerifyMode};
+use openssl::x509::{X509, X509NameBuilder};
 
 use aap_contracts::TransportError;
 
@@ -93,59 +96,29 @@ impl Write for BioAdapter {
 /// [`BioAdapter::to_ssl`] then reading plaintext from the session.
 pub(crate) type TlsSession = SslStream<BioAdapter>;
 
-// ── Certificate helpers ───────────────────────────────────────────────────────
+// ── TLS server context ────────────────────────────────────────────────────────
 
-/// Load a TLS certificate from `server/certs/`, or generate an ephemeral one.
+/// Generate an ephemeral RSA 2048-bit self-signed certificate and key.
 ///
-/// Looks for `server/certs/server.crt` and `server/certs/server.key` relative
-/// to the current working directory. Falls back to a freshly generated
-/// self-signed RSA-2048 certificate when the files are absent.
-pub(crate) fn load_or_generate_cert() -> Result<(PKey<Private>, X509), TransportError> {
-    let crt_path = Path::new("server/certs/server.crt");
-    let key_path = Path::new("server/certs/server.key");
+/// Android Auto does not verify the phone's certificate, so a fresh ephemeral
+/// cert is fine and avoids any on-disk key-management complexity.
+fn generate_self_signed_cert() -> Result<(X509, PKey<openssl::pkey::Private>), TransportError> {
+    let rsa = Rsa::generate(2048)
+        .map_err(|e| TransportError::Tls(format!("RSA keygen: {e}")))?;
+    let key = PKey::from_rsa(rsa)
+        .map_err(|e| TransportError::Tls(format!("PKey::from_rsa: {e}")))?;
 
-    if crt_path.exists() && key_path.exists() {
-        let cert_pem =
-            std::fs::read(crt_path).map_err(|e| TransportError::Tls(format!("read cert: {e}")))?;
-        let key_pem =
-            std::fs::read(key_path).map_err(|e| TransportError::Tls(format!("read key: {e}")))?;
-
-        let cert = X509::from_pem(&cert_pem)
-            .map_err(|e| TransportError::Tls(format!("parse cert: {e}")))?;
-        let pkey = PKey::private_key_from_pem(&key_pem)
-            .map_err(|e| TransportError::Tls(format!("parse key: {e}")))?;
-
-        return Ok((pkey, cert));
-    }
-
-    generate_self_signed_cert()
-}
-
-/// Generate an ephemeral self-signed RSA-2048 / SHA-256 certificate.
-fn generate_self_signed_cert() -> Result<(PKey<Private>, X509), TransportError> {
-    let rsa = Rsa::generate(2048).map_err(|e| TransportError::Tls(format!("RSA generate: {e}")))?;
-    let pkey =
-        PKey::from_rsa(rsa).map_err(|e| TransportError::Tls(format!("PKey from RSA: {e}")))?;
-
-    let mut name =
-        X509NameBuilder::new().map_err(|e| TransportError::Tls(format!("X509Name: {e}")))?;
-    name.append_entry_by_text("CN", "smartcar")
-        .map_err(|e| TransportError::Tls(format!("set CN: {e}")))?;
+    let mut name = X509NameBuilder::new()
+        .map_err(|e| TransportError::Tls(format!("X509NameBuilder: {e}")))?;
+    name.append_entry_by_text("CN", "Smartcar AA")
+        .map_err(|e| TransportError::Tls(format!("X509Name append CN: {e}")))?;
     let name = name.build();
 
-    let mut builder =
-        X509::builder().map_err(|e| TransportError::Tls(format!("X509 builder: {e}")))?;
+    let mut builder = X509::builder()
+        .map_err(|e| TransportError::Tls(format!("X509::builder: {e}")))?;
     builder
         .set_version(2)
         .map_err(|e| TransportError::Tls(format!("set_version: {e}")))?;
-
-    let serial = BigNum::from_u32(1)
-        .and_then(|b| b.to_asn1_integer())
-        .map_err(|e| TransportError::Tls(format!("serial: {e}")))?;
-    builder
-        .set_serial_number(&serial)
-        .map_err(|e| TransportError::Tls(format!("set_serial_number: {e}")))?;
-
     builder
         .set_subject_name(&name)
         .map_err(|e| TransportError::Tls(format!("set_subject_name: {e}")))?;
@@ -153,13 +126,13 @@ fn generate_self_signed_cert() -> Result<(PKey<Private>, X509), TransportError> 
         .set_issuer_name(&name)
         .map_err(|e| TransportError::Tls(format!("set_issuer_name: {e}")))?;
     builder
-        .set_pubkey(&pkey)
+        .set_pubkey(&key)
         .map_err(|e| TransportError::Tls(format!("set_pubkey: {e}")))?;
 
-    let not_before =
-        Asn1Time::days_from_now(0).map_err(|e| TransportError::Tls(format!("not_before: {e}")))?;
+    let not_before = Asn1Time::days_from_now(0)
+        .map_err(|e| TransportError::Tls(format!("Asn1Time not_before: {e}")))?;
     let not_after = Asn1Time::days_from_now(3650)
-        .map_err(|e| TransportError::Tls(format!("not_after: {e}")))?;
+        .map_err(|e| TransportError::Tls(format!("Asn1Time not_after: {e}")))?;
     builder
         .set_not_before(&not_before)
         .map_err(|e| TransportError::Tls(format!("set_not_before: {e}")))?;
@@ -168,32 +141,31 @@ fn generate_self_signed_cert() -> Result<(PKey<Private>, X509), TransportError> 
         .map_err(|e| TransportError::Tls(format!("set_not_after: {e}")))?;
 
     builder
-        .sign(&pkey, MessageDigest::sha256())
-        .map_err(|e| TransportError::Tls(format!("sign: {e}")))?;
+        .sign(&key, MessageDigest::sha256())
+        .map_err(|e| TransportError::Tls(format!("X509 sign: {e}")))?;
 
-    Ok((pkey, builder.build()))
+    Ok((builder.build(), key))
 }
 
-/// Build a TLS server [`SslContext`] for the Android Auto protocol.
+/// Build a TLS **server** [`SslContext`] for the Android Auto phone side.
 ///
-/// - Acts as TLS **server** (the phone side holds the certificate).
-/// - Client certificate verification is disabled: the head unit does not
-///   present a certificate in the AA protocol.
-pub(crate) fn build_ssl_context(
-    pkey: &PKey<Private>,
-    cert: &X509,
-) -> Result<SslContext, TransportError> {
+/// The head unit (openauto) is the TLS client: it initiates the handshake by
+/// sending ClientHello. The phone acts as TLS server with an ephemeral
+/// self-signed certificate. The head unit does not verify the cert.
+pub(crate) fn build_ssl_server_context() -> Result<SslContext, TransportError> {
+    let (cert, key) = generate_self_signed_cert()?;
+
     let mut ctx = SslContext::builder(SslMethod::tls_server())
         .map_err(|e| TransportError::Tls(format!("SslContext::builder: {e}")))?;
-
     ctx.set_verify(SslVerifyMode::NONE);
-
-    ctx.set_private_key(pkey)
-        .map_err(|e| TransportError::Tls(format!("set_private_key: {e}")))?;
-    ctx.set_certificate(cert)
+    // Force TLS 1.2 maximum. TLS 1.3 sends a post-handshake NewSessionTicket
+    // that openauto receives as a spurious SslHandshake frame, corrupting the
+    // SSL BIO state before the first encrypted AA message arrives.
+    // AACS (another AA head-unit implementation) applies the same restriction.
+    ctx.set_options(SslOptions::NO_TLSV1_3);
+    ctx.set_certificate(&cert)
         .map_err(|e| TransportError::Tls(format!("set_certificate: {e}")))?;
-    ctx.check_private_key()
-        .map_err(|e| TransportError::Tls(format!("check_private_key: {e}")))?;
-
+    ctx.set_private_key(&key)
+        .map_err(|e| TransportError::Tls(format!("set_private_key: {e}")))?;
     Ok(ctx.build())
 }

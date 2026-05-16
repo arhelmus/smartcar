@@ -271,43 +271,49 @@ impl Transport for TcpTransport {
         Ok(())
     }
 
-    /// Perform the Android Auto TLS handshake.
+    /// Perform the Android Auto TLS handshake as the **phone (TLS server)**.
     ///
-    /// This method owns the entire `SslHandshake` frame exchange:
-    ///
-    /// 1. Reads the head unit's first `SslHandshake` frame (TLS ClientHello).
-    /// 2. Drives the OpenSSL server-side handshake state machine using an
-    ///    in-memory [`tls::BioAdapter`].
-    /// 3. Exchanges further `SslHandshake` frames until the handshake is
-    ///    complete, then stores the session in `self.tls`.
+    /// The head unit (openauto) is the TLS client: it sends ClientHello first
+    /// inside an `SslHandshake` AA frame. We act as TLS server: we receive that
+    /// frame, feed it into OpenSSL via `ssl.accept()`, drain the server's
+    /// response (ServerHello / Certificate / …), and send it back. We loop
+    /// until the handshake completes.
     ///
     /// After this returns `Ok(())`, all subsequent [`Self::send_frame`] /
     /// [`Self::recv_frame`] calls transparently encrypt/decrypt.
     async fn upgrade_tls(&mut self) -> Result<(), TransportError> {
-        info!("starting TLS handshake");
+        info!("starting TLS handshake (phone/server side)");
 
-        let (pkey, cert) = tls::load_or_generate_cert()?;
-        let ctx = tls::build_ssl_context(&pkey, &cert)?;
+        let ctx = tls::build_ssl_server_context()?;
         let ssl = Ssl::new(&ctx).map_err(|e| TransportError::Tls(format!("Ssl::new: {e}")))?;
 
-        let mut adapter = tls::BioAdapter::new();
+        // ── Receive ClientHello ───────────────────────────────────────────────
+        // The head unit sends the first SslHandshake frame (ClientHello).
+        // Feed it into the adapter before calling ssl.accept() so OpenSSL can
+        // process it and generate the server's response immediately.
 
-        // Read the first SslHandshake frame (TLS ClientHello) and feed it in.
-        let first_bytes = self.recv_ssl_bytes().await?;
-        adapter.push(&first_bytes);
+        let mut bio = tls::BioAdapter::new();
+        let client_hello = self.recv_ssl_bytes().await?;
+        bio.push(&client_hello);
 
         // ── Initial accept ────────────────────────────────────────────────────
+        // ssl.accept() processes ClientHello and produces ServerHello + cert in
+        // the adapter's write buffer; it returns WouldBlock because the
+        // handshake is not yet complete.
 
-        let mut mid = match ssl.accept(adapter) {
+        let mut mid = match ssl.accept(bio) {
             Ok(mut stream) => {
-                // Handshake completed in one shot (unusual but possible).
                 let out = stream.get_mut().drain();
                 self.send_ssl_frame(out).await?;
                 self.tls = Some(stream);
                 info!("TLS handshake complete (1 round)");
                 return Ok(());
             }
-            Err(HandshakeError::WouldBlock(mid)) => mid,
+            Err(HandshakeError::WouldBlock(mut mid)) => {
+                let out = mid.get_mut().drain();
+                self.send_ssl_frame(out).await?;
+                mid
+            }
             Err(HandshakeError::Failure(mid)) => {
                 return Err(TransportError::Tls(format!(
                     "TLS accept failure: {}",
@@ -322,29 +328,28 @@ impl Transport for TcpTransport {
         // ── Handshake loop ────────────────────────────────────────────────────
         //
         // Each iteration:
-        //  1. Drain any output OpenSSL generated (e.g. ServerHello + Cert).
-        //  2. Send it to the head unit as an SslHandshake frame.
-        //  3. Receive the head unit's next SslHandshake frame.
-        //  4. Feed it into OpenSSL.
-        //  5. Continue the handshake; loop on WouldBlock, finish on Ok.
+        //  1. Receive the head unit's next SslHandshake frame.
+        //  2. Feed it into OpenSSL.
+        //  3. Drain and send any output OpenSSL produced.
+        //  4. Loop on WouldBlock; finish on Ok.
 
         loop {
-            let outgoing = mid.get_mut().drain();
-            self.send_ssl_frame(outgoing).await?;
-
             let incoming = self.recv_ssl_bytes().await?;
             mid.get_mut().push(&incoming);
 
             mid = match mid.handshake() {
                 Ok(mut stream) => {
-                    // Send any final bytes (server ChangeCipherSpec + Finished).
                     let out = stream.get_mut().drain();
                     self.send_ssl_frame(out).await?;
                     self.tls = Some(stream);
                     info!("TLS handshake complete");
                     return Ok(());
                 }
-                Err(HandshakeError::WouldBlock(new_mid)) => new_mid,
+                Err(HandshakeError::WouldBlock(mut new_mid)) => {
+                    let out = new_mid.get_mut().drain();
+                    self.send_ssl_frame(out).await?;
+                    new_mid
+                }
                 Err(HandshakeError::Failure(mid)) => {
                     return Err(TransportError::Tls(format!(
                         "TLS handshake failure: {}",

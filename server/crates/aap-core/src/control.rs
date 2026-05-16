@@ -7,12 +7,18 @@
 use bytes::Bytes;
 use prost::Message;
 
-use aap_contracts::{ChannelId, Frame, MessageType};
+use aap_contracts::{ChannelId, Frame, FrameFlags, MessageType};
 
-/// Encode a protobuf message into a complete control-channel [`Frame`].
-///
-/// The resulting payload is `[msg_id_hi, msg_id_lo, <proto bytes>]`.
+/// Encode a protobuf message into a control-channel [`Frame`] on `ChannelId::Control`.
 pub fn encode_control<M: Message>(msg_type: MessageType, msg: &M) -> Frame {
+    encode_control_on(ChannelId::Control, msg_type, msg)
+}
+
+/// Encode a protobuf message into a control-channel [`Frame`] on a specific channel.
+///
+/// Used for per-channel messages such as `ChannelOpenRequest`, which are sent
+/// on the target channel rather than the control channel.
+pub fn encode_control_on<M: Message>(channel: ChannelId, msg_type: MessageType, msg: &M) -> Frame {
     let proto_len = msg.encoded_len();
     let mut payload = Vec::with_capacity(2 + proto_len);
 
@@ -22,7 +28,29 @@ pub fn encode_control<M: Message>(msg_type: MessageType, msg: &M) -> Frame {
     msg.encode(&mut payload)
         .expect("encoding into a Vec never fails");
 
-    Frame::control_bulk(ChannelId::Control, Bytes::from(payload))
+    Frame {
+        channel,
+        flags: FrameFlags::FIRST | FrameFlags::LAST | FrameFlags::CONTROL,
+        payload: Bytes::from(payload),
+    }
+}
+
+/// Build a data (non-control) [`Frame`] for a specific channel.
+///
+/// Data frames carry channel-specific messages with the same two-byte
+/// `message_id` prefix as control frames, but without `FrameFlags::CONTROL`.
+/// Used for sensor requests, media setup, and other per-channel messages
+/// initiated by the phone after channels are opened.
+pub fn build_data_frame(channel: ChannelId, message_id: u16, body: Bytes) -> Frame {
+    let mut payload = Vec::with_capacity(2 + body.len());
+    payload.push((message_id >> 8) as u8);
+    payload.push((message_id & 0xFF) as u8);
+    payload.extend_from_slice(&body);
+    Frame {
+        channel,
+        flags: FrameFlags::FIRST | FrameFlags::LAST,
+        payload: Bytes::from(payload),
+    }
 }
 
 /// Parse the `message_id` from the first two bytes of a control-channel payload.
