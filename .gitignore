@@ -1,6 +1,8 @@
 target/
-.build/             # native macOS build artifacts (run_openauto_native.py)
-Cargo.lock          # workspace-level; we commit at server/ only
+# native macOS build artifacts (run_openauto_native.py)
+.build/
+# workspace-level Cargo.lock; we commit at server/ only
+Cargo.lock
 **/.DS_Store
 .idea/
 .vscode/
