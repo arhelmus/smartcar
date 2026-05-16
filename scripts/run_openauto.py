@@ -2,22 +2,33 @@
 """run_openauto.py — launch openauto, building it first if needed.
 
 Usage:
-    nix-shell --pure --run "python3 scripts/run_openauto.py"
+    python3 scripts/run_openauto.py             # detached (default)
+    python3 scripts/run_openauto.py --attached  # keep terminal attached
 """
 
+import argparse
+import os
+import signal
 import subprocess
 import sys
 
+import common
 from build_openauto import AUTOAPP, OPENAUTO_DIR, OPENAUTO_TCP_PORT, build_openauto
 
+PID_FILE = common.REPO_ROOT / ".build" / "openauto.pid"
 
-def run_openauto() -> int:
-    """Ensure the binary exists, free the port if needed, then launch."""
-    if not AUTOAPP.exists():
-        print("Binary not found — building …", file=sys.stderr)
-        build_openauto()
 
-    # Kill any process already holding the port.
+def _kill_previous() -> None:
+    if PID_FILE.exists():
+        try:
+            pid = int(PID_FILE.read_text().strip())
+            os.kill(pid, signal.SIGTERM)
+            print(f"Stopped previous openauto (PID {pid}).", file=sys.stderr)
+        except (ProcessLookupError, ValueError):
+            pass
+        PID_FILE.unlink(missing_ok=True)
+
+    # Also free the port in case a stale process holds it.
     lsof = subprocess.run(
         ["lsof", "-ti", f"TCP:{OPENAUTO_TCP_PORT}", "-sTCP:LISTEN"],
         capture_output=True, text=True,
@@ -26,20 +37,47 @@ def run_openauto() -> int:
         print(f"Killing PID {pid} on port {OPENAUTO_TCP_PORT} …", file=sys.stderr)
         subprocess.run(["kill", pid])
 
-    print(f"Launching {AUTOAPP} …", file=sys.stderr)
-    proc = subprocess.Popen([str(AUTOAPP)], cwd=str(OPENAUTO_DIR))
-    try:
-        proc.wait()
-    except KeyboardInterrupt:
-        print("\nInterrupted — stopping …", file=sys.stderr)
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
 
-    return 0 if proc.returncode in (0, -15) else proc.returncode
+def run_openauto(attached: bool = False) -> int:
+    if not AUTOAPP.exists():
+        print("Binary not found — building …", file=sys.stderr)
+        build_openauto()
+
+    _kill_previous()
+
+    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Launching {AUTOAPP} …", file=sys.stderr)
+
+    if attached:
+        proc = subprocess.Popen([str(AUTOAPP)], cwd=str(OPENAUTO_DIR))
+        PID_FILE.write_text(str(proc.pid))
+        try:
+            proc.wait()
+        except KeyboardInterrupt:
+            print("\nInterrupted — stopping …", file=sys.stderr)
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        finally:
+            PID_FILE.unlink(missing_ok=True)
+        return 0 if proc.returncode in (0, -15) else proc.returncode
+    else:
+        proc = subprocess.Popen(
+            [str(AUTOAPP)],
+            cwd=str(OPENAUTO_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        PID_FILE.write_text(str(proc.pid))
+        print(f"openauto running in background (PID {proc.pid}).", file=sys.stderr)
+        return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(run_openauto())
+    parser = argparse.ArgumentParser(description="Launch openauto.")
+    parser.add_argument("--attached", action="store_true", help="Keep terminal attached to the process.")
+    args = parser.parse_args()
+    raise SystemExit(run_openauto(attached=args.attached))
