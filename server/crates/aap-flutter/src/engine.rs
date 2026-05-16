@@ -81,10 +81,11 @@ pub struct FlutterEngineHandle {
 impl FlutterEngineHandle {
     /// Launch the Flutter engine.
     ///
-    /// `assets_dir` must point to the compiled Flutter asset bundle
-    /// (`flutter_assets/` parent produced by `flutter build bundle`).
-    /// `icu_data` must point to `icudtl.dat` (bundled with
-    /// `libflutter_engine.so`).
+    /// `assets_dir` must be the `flutter_assets/` directory produced by
+    /// `flutter build bundle` — this path is passed directly to
+    /// `FlutterProjectArgs.assets_path`.
+    /// `icu_data` must point to `icudtl.dat` (ships with
+    /// `libflutter_engine.so` and is also cached in the Flutter SDK).
     ///
     /// After this call the engine is running and an external texture with
     /// id `0` is registered for the video stream.
