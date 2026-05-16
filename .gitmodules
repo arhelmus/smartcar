@@ -7,3 +7,6 @@
 [submodule "server/third_party/AAProto"]
 	path = server/third_party/AAProto
 	url = https://github.com/opencardev/AAProto
+[submodule "server/third_party/AACS"]
+	path = server/third_party/AACS
+	url = https://github.com/tomasz-grobelny/AACS
