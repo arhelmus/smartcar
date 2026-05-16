@@ -56,7 +56,7 @@ def _check_nix() -> None:
     if not Path(NIX_SHELL).exists():
         print("ERROR: nix-shell not found — run 'make init' to install Nix.", file=sys.stderr)
         raise SystemExit(1)
-    script = str(Path(__file__).resolve())
+    script = str(Path(sys.argv[0]).resolve())
     cmd = " ".join(["python3", script] + sys.argv[1:])
     print(f"Re-running inside nix-shell --pure …", file=sys.stderr)
     os.chdir(str(common.REPO_ROOT))  # shell.nix lives in repo root
@@ -164,6 +164,12 @@ def build_openauto(rebuild: bool = False) -> None:
         f"-DCMAKE_EXE_LINKER_FLAGS={_openssl_link_flags()}",
     ] + _FINDER_OVERRIDES + _blkid_flags())
     _run(["cmake", "--build", str(OPENAUTO_BUILD), f"-j{jobs}"])
+
+    # Persist runtime env vars needed outside nix-shell.
+    qt_path = os.environ.get("QT_QPA_PLATFORM_PLUGIN_PATH", "")
+    if qt_path:
+        runtime_env = INSTALL_PREFIX.parent / "runtime.env"
+        runtime_env.write_text(f"QT_QPA_PLATFORM_PLUGIN_PATH={qt_path}\n")
 
 
 # ── CLI entry point ────────────────────────────────────────────────────────────

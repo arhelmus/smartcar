@@ -62,6 +62,6 @@ pkgs.mkShell {
     # Expose Qt platform plugins (cocoa) at runtime.
     export QT_QPA_PLATFORM_PLUGIN_PATH="${pkgs.qt5.qtbase.bin}/lib/qt-${pkgs.qt5.qtbase.version}/plugins/platforms"
     echo "smartcar Nix shell ready. Run:"
-    echo "  python3 scripts/run_openauto_native.py [--rebuild]"
+    echo "  python3 scripts/run_openauto.py [--clean] [--attached]"
   '';
 }

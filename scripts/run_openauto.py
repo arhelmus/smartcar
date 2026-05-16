@@ -13,9 +13,20 @@ import subprocess
 import sys
 
 import common
-from build_openauto import AUTOAPP, OPENAUTO_DIR, OPENAUTO_TCP_PORT, build_openauto
+from build_openauto import AUTOAPP, INSTALL_PREFIX, OPENAUTO_DIR, OPENAUTO_TCP_PORT, build_openauto
 
 PID_FILE = common.REPO_ROOT / ".build" / "openauto.pid"
+RUNTIME_ENV = INSTALL_PREFIX.parent / "runtime.env"
+
+
+def _runtime_env() -> dict:
+    env = os.environ.copy()
+    if RUNTIME_ENV.exists():
+        for line in RUNTIME_ENV.read_text().splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                env[k.strip()] = v.strip()
+    return env
 
 
 def _kill_previous() -> None:
@@ -38,18 +49,19 @@ def _kill_previous() -> None:
         subprocess.run(["kill", pid])
 
 
-def run_openauto(attached: bool = False) -> int:
-    if not AUTOAPP.exists():
-        print("Binary not found — building …", file=sys.stderr)
-        build_openauto()
+def run_openauto(attached: bool = False, clean: bool = False) -> int:
+    if clean or not AUTOAPP.exists():
+        build_openauto(rebuild=clean)
 
     _kill_previous()
 
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     print(f"Launching {AUTOAPP} …", file=sys.stderr)
 
+    env = _runtime_env()
+
     if attached:
-        proc = subprocess.Popen([str(AUTOAPP)], cwd=str(OPENAUTO_DIR))
+        proc = subprocess.Popen([str(AUTOAPP)], cwd=str(OPENAUTO_DIR), env=env)
         PID_FILE.write_text(str(proc.pid))
         try:
             proc.wait()
@@ -67,6 +79,7 @@ def run_openauto(attached: bool = False) -> int:
         proc = subprocess.Popen(
             [str(AUTOAPP)],
             cwd=str(OPENAUTO_DIR),
+            env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
@@ -79,5 +92,6 @@ def run_openauto(attached: bool = False) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Launch openauto.")
     parser.add_argument("--attached", action="store_true", help="Keep terminal attached to the process.")
+    parser.add_argument("--clean", action="store_true", help="Force a clean rebuild before launching.")
     args = parser.parse_args()
-    raise SystemExit(run_openauto(attached=args.attached))
+    raise SystemExit(run_openauto(attached=args.attached, clean=args.clean))
