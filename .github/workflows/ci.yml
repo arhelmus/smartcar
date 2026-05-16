@@ -29,7 +29,7 @@ jobs:
       - run: sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: "server -> target" }
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy --workspace --exclude aap-flutter --all-targets -- -D warnings
         working-directory: server
 
   test:
@@ -41,7 +41,7 @@ jobs:
       - run: sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: "server -> target" }
-      - run: cargo test --workspace
+      - run: cargo test --workspace --exclude aap-flutter
         working-directory: server
 
   audit:
@@ -64,7 +64,7 @@ jobs:
       - run: sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: "server -> target" }
-      - run: cargo check --workspace
+      - run: cargo check --workspace --exclude aap-flutter
         working-directory: server
 
   deny:

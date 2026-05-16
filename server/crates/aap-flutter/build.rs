@@ -142,7 +142,7 @@ fn watch_flutter_sources(flutter_project: &Path) {
     if let Ok(entries) = std::fs::read_dir(&lib_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map_or(false, |e| e == "dart") {
+            if path.extension().is_some_and(|e| e == "dart") {
                 println!("cargo:rerun-if-changed={}", path.display());
             }
         }
