@@ -1,0 +1,37 @@
+diff --git a/src/autoapp/App.cpp b/src/autoapp/App.cpp
+index 751c7cd..7c8c1c0 100644
+--- a/src/autoapp/App.cpp
++++ b/src/autoapp/App.cpp
+@@ -31,7 +31,7 @@ namespace f1x::openauto::autoapp {
+       : ioService_(ioService), usbWrapper_(usbWrapper), tcpWrapper_(tcpWrapper), strand_(ioService_),
+         androidAutoEntityFactory_(androidAutoEntityFactory), usbHub_(std::move(usbHub)),
+         connectedAccessoriesEnumerator_(std::move(connectedAccessoriesEnumerator)),
+-        acceptor_(ioService, boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), 5000)), isStopped_(false) {
++        acceptor_(ioService, boost::asio::ip::tcp::endpoint(boost::asio::ip::tcp::v4(), 5278)), isStopped_(false) {
+ 
+   }
+ 
+diff --git a/src/autoapp/autoapp.cpp b/src/autoapp/autoapp.cpp
+index 8d37079..ed34a1c 100644
+--- a/src/autoapp/autoapp.cpp
++++ b/src/autoapp/autoapp.cpp
+@@ -120,8 +120,8 @@ int main(int argc, char* argv[])
+     if (primaryScreen) {
+       // Get the geometry of the primary screen
+       QRect screenGeometry = primaryScreen->geometry();
+-      width = screenGeometry.width();
+-      height = screenGeometry.height();
++      width = 1280;
++      height = 960;
+       OPENAUTO_LOG(info) << "[AutoApp] Using gemoetry from primary screen.";
+     } else {
+       OPENAUTO_LOG(info) << "[AutoApp] Unable to find primary screen, using default values.";
+@@ -229,7 +229,7 @@ int main(int argc, char* argv[])
+         OPENAUTO_LOG(debug) << "[AutoApp] MainWindow Day.";
+     });
+ 
+-    mainWindow.showFullScreen();
++    mainWindow.show();
+     mainWindow.setFixedSize(width, height);
+     mainWindow.adjustSize();
+ 

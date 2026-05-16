@@ -1,4 +1,6 @@
 target/
+__pycache__/
+*.pyc
 # native macOS build artifacts (run_openauto_native.py)
 .build/
 # workspace-level Cargo.lock; we commit at server/ only
