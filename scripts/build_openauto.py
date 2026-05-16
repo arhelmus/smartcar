@@ -31,7 +31,6 @@ AASDK_BUILD    = AASDK_DIR    / "build-macos"
 OPENAUTO_BUILD = OPENAUTO_DIR / "build-macos"
 INSTALL_PREFIX = common.REPO_ROOT / ".build" / "native"
 AUTOAPP        = OPENAUTO_BUILD / "bin" / "autoapp"
-PATCHES_DIR    = common.REPO_ROOT / "scripts" / "patches" / "openauto"
 
 OPENAUTO_TCP_PORT = 5278
 
@@ -78,23 +77,6 @@ def _check_submodules() -> bool:
         )
     return ok
 
-
-def _apply_patches() -> None:
-    """Apply all .patch files from PATCHES_DIR to the openauto source tree.
-
-    Uses --check first; if the patch is already applied, skips silently.
-    """
-    for patch in sorted(PATCHES_DIR.glob("*.patch")):
-        check = subprocess.run(
-            ["git", "apply", "--check", str(patch)],
-            cwd=str(OPENAUTO_DIR),
-            capture_output=True,
-        )
-        if check.returncode != 0:
-            print(f"Patch already applied (skipping): {patch.name}", file=sys.stderr)
-            continue
-        print(f"Applying patch: {patch.name}", file=sys.stderr)
-        subprocess.run(["git", "apply", str(patch)], cwd=str(OPENAUTO_DIR), check=True)
 
 
 def _blkid_flags() -> List[str]:
@@ -170,7 +152,6 @@ def build_openauto(rebuild: bool = False) -> None:
 
     # ── openauto ──
     print("─── Building openauto ───", file=sys.stderr)
-    _apply_patches()
     stubs_header = common.REPO_ROOT / "scripts" / "openauto_macos_stubs.hpp"
     _run([
         "cmake", "-S", str(OPENAUTO_DIR), "-B", str(OPENAUTO_BUILD),

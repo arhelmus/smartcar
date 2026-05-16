@@ -12,6 +12,9 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CERTS_DIR = REPO_ROOT / "server" / "certs"
+OPENAUTO_DIR = REPO_ROOT / "server" / "third_party" / "openauto"
+PATCHES_DIR = REPO_ROOT / "scripts" / "patches" / "openauto"
+OPENAUTO_PATCH_COMMIT = "smartcar: macos patches"
 
 
 def _run(args: list[str], **kwargs) -> None:
@@ -78,9 +81,34 @@ def _check_certs() -> None:
     print("  Generated server/certs/server.key and server/certs/server.crt.", file=sys.stderr)
 
 
+def _patch_openauto() -> None:
+    print("Checking openauto patches …", file=sys.stderr)
+    result = subprocess.run(
+        ["git", "-C", str(OPENAUTO_DIR), "log", "--oneline", f"--grep={OPENAUTO_PATCH_COMMIT}"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        print("  Patches already applied.", file=sys.stderr)
+        return
+
+    patch_files = sorted(PATCHES_DIR.glob("*.patch"))
+    if not patch_files:
+        print("  No patches to apply.", file=sys.stderr)
+        return
+
+    print(f"  Applying {len(patch_files)} patch(es) …", file=sys.stderr)
+    for patch in patch_files:
+        _run(["git", "-C", str(OPENAUTO_DIR), "apply", str(patch)])
+
+    _run(["git", "-C", str(OPENAUTO_DIR), "add", "-A"])
+    _run(["git", "-C", str(OPENAUTO_DIR), "commit", "-m", OPENAUTO_PATCH_COMMIT])
+    print("  Patches committed locally.", file=sys.stderr)
+
+
 def main() -> int:
     _check_nix()
     _check_submodules()
+    _patch_openauto()
     _check_cargo()
     _check_certs()
     print("\nInit complete.", file=sys.stderr)
