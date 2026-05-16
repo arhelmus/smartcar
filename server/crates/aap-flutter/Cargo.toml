@@ -10,5 +10,5 @@ aap-video   = { path = "../aap-video" }
 bytes       = { workspace = true }
 tracing     = { workspace = true }
 anyhow      = { workspace = true }
-openh264    = "0.6"
+openh264    = "0.8"
 parking_lot = "0.12"
