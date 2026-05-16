@@ -29,12 +29,13 @@ jobs:
         with: { components: clippy }
       - uses: subosito/flutter-action@v2
         with: { channel: stable }
-      - name: Extract Flutter embedder
+      - name: Download Flutter embedder
         run: |
-          flutter precache --linux
+          ENGINE=$(cat "$FLUTTER_ROOT/bin/internal/engine.version")
           mkdir -p "$FLUTTER_ENGINE_DIR"
-          unzip -o "$FLUTTER_ROOT/bin/cache/artifacts/engine/linux-x64/linux-x64-embedder" \
-            libflutter_engine.so -d "$FLUTTER_ENGINE_DIR"
+          curl -fsSL "https://storage.googleapis.com/flutter_infra_release/flutter/${ENGINE}/linux-x64/linux-x64-embedder.zip" \
+            -o /tmp/embedder.zip
+          unzip -o /tmp/embedder.zip libflutter_engine.so -d "$FLUTTER_ENGINE_DIR"
       - run: sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: "server -> target" }
@@ -51,12 +52,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: subosito/flutter-action@v2
         with: { channel: stable }
-      - name: Extract Flutter embedder
+      - name: Download Flutter embedder
         run: |
-          flutter precache --linux
+          ENGINE=$(cat "$FLUTTER_ROOT/bin/internal/engine.version")
           mkdir -p "$FLUTTER_ENGINE_DIR"
-          unzip -o "$FLUTTER_ROOT/bin/cache/artifacts/engine/linux-x64/linux-x64-embedder" \
-            libflutter_engine.so -d "$FLUTTER_ENGINE_DIR"
+          curl -fsSL "https://storage.googleapis.com/flutter_infra_release/flutter/${ENGINE}/linux-x64/linux-x64-embedder.zip" \
+            -o /tmp/embedder.zip
+          unzip -o /tmp/embedder.zip libflutter_engine.so -d "$FLUTTER_ENGINE_DIR"
       - run: sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: "server -> target" }
@@ -84,12 +86,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: subosito/flutter-action@v2
         with: { channel: stable }
-      - name: Extract Flutter embedder
+      - name: Download Flutter embedder
         run: |
-          flutter precache --linux
+          ENGINE=$(cat "$FLUTTER_ROOT/bin/internal/engine.version")
           mkdir -p "$FLUTTER_ENGINE_DIR"
-          unzip -o "$FLUTTER_ROOT/bin/cache/artifacts/engine/linux-x64/linux-x64-embedder" \
-            libflutter_engine.so -d "$FLUTTER_ENGINE_DIR"
+          curl -fsSL "https://storage.googleapis.com/flutter_infra_release/flutter/${ENGINE}/linux-x64/linux-x64-embedder.zip" \
+            -o /tmp/embedder.zip
+          unzip -o /tmp/embedder.zip libflutter_engine.so -d "$FLUTTER_ENGINE_DIR"
       - run: sudo apt-get install -y protobuf-compiler
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: "server -> target" }
