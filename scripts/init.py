@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""bootstrap.py — one-time developer setup.
+"""init.py — one-time developer setup.
 
 Run once after cloning:
-    python3 scripts/bootstrap.py
+    make init
 """
 
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -22,6 +23,24 @@ def _run(args: list[str], **kwargs) -> None:
         raise SystemExit(1) from exc
 
 
+def _check_nix() -> None:
+    print("Checking Nix …", file=sys.stderr)
+    if shutil.which("nix-shell"):
+        print("  nix-shell OK.", file=sys.stderr)
+        return
+    # DeterminateSystems installs to a fixed path not always on PATH yet
+    if Path("/nix/var/nix/profiles/default/bin/nix-shell").exists():
+        print("  nix-shell found at /nix/var/nix/profiles/default/bin/nix-shell.", file=sys.stderr)
+        print("  Add /nix/var/nix/profiles/default/bin to PATH if not already set.", file=sys.stderr)
+        return
+    print(
+        "  WARNING: Nix not found — required to build openauto.\n"
+        "  Install with the DeterminateSystems installer:\n"
+        "    curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install",
+        file=sys.stderr,
+    )
+
+
 def _check_submodules() -> None:
     print("Checking git submodules …", file=sys.stderr)
     result = subprocess.run(
@@ -36,12 +55,10 @@ def _check_submodules() -> None:
 
 def _check_cargo() -> None:
     print("Checking Rust toolchain …", file=sys.stderr)
-    try:
-        subprocess.run(["cargo", "--version"], check=True, capture_output=True)
+    if shutil.which("cargo"):
         print("  Cargo OK.", file=sys.stderr)
-    except FileNotFoundError:
-        print("ERROR: cargo not found — install Rust via https://rustup.rs/", file=sys.stderr)
-        raise SystemExit(1)
+    else:
+        print("  WARNING: cargo not found — install Rust via https://rustup.rs/", file=sys.stderr)
 
 
 def _check_certs() -> None:
@@ -63,13 +80,13 @@ def _check_certs() -> None:
 
 
 def main() -> int:
+    _check_nix()
     _check_submodules()
     _check_cargo()
     _check_certs()
-    print("\nBootstrap complete.", file=sys.stderr)
-    print("  Build openauto:  nix-shell --pure --run 'python3 scripts/build_openauto.py'", file=sys.stderr)
-    print("  Run openauto:    nix-shell --pure --run 'python3 scripts/run_openauto.py'", file=sys.stderr)
-    print("  Run server:      python3 scripts/run_server.py", file=sys.stderr)
+    print("\nInit complete. Next steps:", file=sys.stderr)
+    print("  make openauto     # build openauto", file=sys.stderr)
+    print("  make run          # launch openauto + server", file=sys.stderr)
     return 0
 
 

@@ -6,15 +6,15 @@ production.
 
 ## Layout
 
-- `server/` — Rust workspace (the projection source).
+- `server/` — Rust workspace (the AA projection source).
+- `shell.nix` — hermetic Nix environment for building openauto natively on macOS.
+- `scripts/` — Python orchestration (`init.py`, `build_openauto.py`, `run_openauto.py`, `run_server.py`).
+- `scripts/patches/openauto/` — local patches applied to the openauto submodule at build time.
 - `apps/ios`, `apps/android` — future client apps (placeholders).
-- `docker/` — openauto emulator container + compose.
-- `scripts/` — Python orchestration (stdlib only).
 - `docs/protocol/` — Android Auto wire protocol documentation.
 
 ## Quickstart
 
 ```sh
-git submodule update --init --recursive
-cd server && cargo check --workspace
+make init
 ```
