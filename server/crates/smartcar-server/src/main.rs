@@ -25,8 +25,9 @@ use aap_video::{VideoConfig, VideoService};
 #[derive(Parser, Debug)]
 #[command(name = "smartcar-server", version)]
 struct Args {
-    /// Head-unit target address (openauto listens on 5000 in TCP/WiFi mode).
-    #[arg(long, default_value = "127.0.0.1:5000")]
+    /// Head-unit target address. openauto listens on 5000 inside Docker,
+    /// mapped to host port 5001 (5000 is taken by macOS AirPlay Receiver).
+    #[arg(long, default_value = "127.0.0.1:5001")]
     target: String,
 
     /// Use the Flutter Embedded renderer instead of the null sink.
@@ -74,14 +75,11 @@ fn build_video_service(want_flutter: bool) -> anyhow::Result<VideoService> {
 
 #[cfg(feature = "flutter")]
 fn build_flutter_video_service() -> anyhow::Result<VideoService> {
-    use std::path::Path;
-    use aap_flutter::{FlutterSink, DEFAULT_ASSETS_DIR, DEFAULT_ICU_DATA};
+    use aap_flutter::{resolve_flutter_paths, FlutterSink};
 
-    let assets = Path::new(DEFAULT_ASSETS_DIR);
-    let icu = Path::new(DEFAULT_ICU_DATA);
-
+    let (assets, icu) = resolve_flutter_paths();
     tracing::info!(?assets, ?icu, "starting Flutter engine");
-    let sink = FlutterSink::new(assets, icu)?;
+    let sink = FlutterSink::new(&assets, &icu)?;
     Ok(VideoService::with_sink(VideoConfig::default(), Box::new(sink)))
 }
 

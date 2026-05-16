@@ -58,6 +58,66 @@ fn main() {
     // libflutter_engine.so and is also cached in the Flutter SDK.
     let icu_data = find_icu_data(flutter_bin.as_deref());
     println!("cargo:rustc-env=FLUTTER_ICU_DATA={icu_data}");
+
+    // ── Copy bundle next to the binary ────────────────────────────────────────
+    // This makes the binary self-contained: it finds flutter_assets/ and
+    // icudtl.dat relative to itself at runtime, regardless of where it was
+    // built.
+    copy_bundle_to_target(
+        Path::new(&assets_dir),
+        if icu_data.is_empty() { None } else { Some(Path::new(&icu_data)) },
+    );
+}
+
+// ── Bundle copy to target dir ─────────────────────────────────────────────────
+
+/// Copy `flutter_assets/` (and optionally `icudtl.dat`) into
+/// `target/<profile>/` so they sit next to the compiled binary.
+///
+/// `target/<profile>/` is derived from `OUT_DIR`:
+///   `OUT_DIR` = `target/<profile>/build/<crate>/out`  →  ancestor 3 levels up.
+fn copy_bundle_to_target(assets_dir: &Path, icu_data: Option<&Path>) {
+    let out_dir = match std::env::var("OUT_DIR") {
+        Ok(d) => PathBuf::from(d),
+        Err(_) => return,
+    };
+    // target/<profile>/build/<crate>/out  →  target/<profile>/
+    let Some(target_dir) = out_dir.ancestors().nth(3) else {
+        println!("cargo:warning=Could not locate target dir from OUT_DIR; skipping bundle copy");
+        return;
+    };
+
+    // flutter_assets/
+    let dst_assets = target_dir.join("flutter_assets");
+    if assets_dir.exists() {
+        if let Err(e) = copy_dir_all(assets_dir, &dst_assets) {
+            println!("cargo:warning=Failed to copy flutter_assets to target: {e}");
+        }
+    }
+
+    // icudtl.dat
+    if let Some(icu) = icu_data {
+        if icu.exists() {
+            let dst_icu = target_dir.join("icudtl.dat");
+            if let Err(e) = std::fs::copy(icu, &dst_icu) {
+                println!("cargo:warning=Failed to copy icudtl.dat to target: {e}");
+            }
+        }
+    }
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &dst.join(entry.file_name()))?;
+        } else {
+            std::fs::copy(entry.path(), dst.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
 }
 
 // ── Source watching ───────────────────────────────────────────────────────────
