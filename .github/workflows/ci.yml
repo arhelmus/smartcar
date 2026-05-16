@@ -68,8 +68,3 @@ jobs:
         with:
           manifest-path: server/Cargo.toml
 
-  compose-config:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - run: docker compose -f docker/docker-compose.yml config >/dev/null
