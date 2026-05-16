@@ -8,6 +8,7 @@ Usage:
 
 import argparse
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -39,14 +40,16 @@ def _kill_previous() -> None:
             pass
         PID_FILE.unlink(missing_ok=True)
 
-    # Also free the port in case a stale process holds it.
-    lsof = subprocess.run(
-        ["lsof", "-ti", f"TCP:{OPENAUTO_TCP_PORT}", "-sTCP:LISTEN"],
-        capture_output=True, text=True,
-    )
-    for pid in lsof.stdout.split():
-        print(f"Killing PID {pid} on port {OPENAUTO_TCP_PORT} …", file=sys.stderr)
-        subprocess.run(["kill", pid])
+    # Best-effort: free the port in case a stale process holds it.
+    lsof_bin = shutil.which("lsof")
+    if lsof_bin:
+        lsof = subprocess.run(
+            [lsof_bin, "-ti", f"TCP:{OPENAUTO_TCP_PORT}", "-sTCP:LISTEN"],
+            capture_output=True, text=True,
+        )
+        for pid in lsof.stdout.split():
+            print(f"Killing PID {pid} on port {OPENAUTO_TCP_PORT} …", file=sys.stderr)
+            subprocess.run(["kill", pid])
 
 
 def run_openauto(attached: bool = False, clean: bool = False) -> int:
