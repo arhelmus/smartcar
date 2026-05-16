@@ -1,0 +1,28 @@
+diff --git a/src/autoapp/Service/Sensor/SensorService.cpp b/src/autoapp/Service/Sensor/SensorService.cpp
+index f7368b6..68f1cc8 100644
+--- a/src/autoapp/Service/Sensor/SensorService.cpp
++++ b/src/autoapp/Service/Sensor/SensorService.cpp
+@@ -236,15 +236,17 @@ namespace f1x::openauto::autoapp::service::sensor {
+           this->sendNightData();
+         }
+         bool gpsDataAvailable = false;
++        if (this->gpsEnabled_) {
+ #if GPSD_API_MAJOR_VERSION >= 7
+-        if (gps_read (&this->gpsData_, NULL, 0) != -1) {
+-          gpsDataAvailable = true;
+-        }
++          if (gps_read (&this->gpsData_, NULL, 0) != -1) {
++            gpsDataAvailable = true;
++          }
+ #else
+-        if (gps_read (&this->gpsData_) != -1) {
+-                    gpsDataAvailable = true;
+-                }
++          if (gps_read (&this->gpsData_) != -1) {
++            gpsDataAvailable = true;
++          }
+ #endif
++        }
+         if ((this->gpsEnabled_) &&
+             (gps_waiting(&this->gpsData_, 0)) &&
+             (gpsDataAvailable == true) &&

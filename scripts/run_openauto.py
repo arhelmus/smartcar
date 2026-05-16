@@ -7,17 +7,49 @@ Usage:
 """
 
 import argparse
+import glob
 import os
+import re
 import shutil
 import signal
 import subprocess
 import sys
+from pathlib import Path
 
 import common
 from build_openauto import AUTOAPP, INSTALL_PREFIX, OPENAUTO_DIR, OPENAUTO_TCP_PORT, build_openauto
 
 PID_FILE = common.REPO_ROOT / ".build" / "openauto.pid"
 RUNTIME_ENV = INSTALL_PREFIX.parent / "runtime.env"
+
+
+def _detect_qt_plugin_path() -> str:
+    """Return extra QT_PLUGIN_PATH entries so Qt can find its multimedia plugins.
+
+    On Nix, each package output gets its own store hash, so the qtmultimedia
+    library and its plugins live under different hashes.  We scan the Nix store
+    directly for plugin trees that contain the mediaservice plugins.
+    """
+    dirs: list[str] = []
+    for plugin_dir in glob.glob("/nix/store/*-qtmultimedia-*/lib/qt-*/plugins"):
+        if Path(plugin_dir, "mediaservice").exists():
+            dirs.append(plugin_dir)
+    return ":".join(dirs)
+
+
+def _detect_gst_plugin_path() -> str:
+    """Return GST_PLUGIN_PATH covering all Nix-built GStreamer plugin packages.
+
+    The Nix-built Qt GStreamer multimedia backend (libgstmediaplayer.dylib) links
+    against Nix GStreamer, so GStreamer must find its plugin registry in the same
+    Nix store.  Without this, GstEngine::available() returns false and Qt falls
+    back to the AVFoundation backend, which cannot decode from a QIODevice stream.
+    """
+    dirs: list[str] = []
+    for gst_dir in glob.glob("/nix/store/*/lib/gstreamer-1.0"):
+        if any(Path(gst_dir).glob("libgst*.dylib")):
+            dirs.append(gst_dir)
+    return ":".join(sorted(dirs))
 
 
 def _runtime_env() -> dict:
@@ -27,6 +59,20 @@ def _runtime_env() -> dict:
             if "=" in line:
                 k, v = line.split("=", 1)
                 env[k.strip()] = v.strip()
+
+    extra_qt_plugins = _detect_qt_plugin_path()
+    if extra_qt_plugins:
+        existing = env.get("QT_PLUGIN_PATH", "")
+        env["QT_PLUGIN_PATH"] = (existing + ":" + extra_qt_plugins).strip(":")
+
+    gst_plugin_path = _detect_gst_plugin_path()
+    if gst_plugin_path:
+        existing = env.get("GST_PLUGIN_PATH", "")
+        env["GST_PLUGIN_PATH"] = (existing + ":" + gst_plugin_path).strip(":")
+        print(f"GST_PLUGIN_PATH set ({len(gst_plugin_path.split(':'))} dirs)", file=sys.stderr)
+
+    env["QT_DEBUG_PLUGINS"] = "1"
+
     return env
 
 
