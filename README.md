@@ -10,7 +10,7 @@ production.
 - `apps/ios`, `apps/android` — future client apps (placeholders).
 - `docker/` — openauto emulator container + compose.
 - `scripts/` — Python orchestration (stdlib only).
-- `docs/` — architecture and workstream tracking.
+- `docs/protocol/` — Android Auto wire protocol documentation.
 
 ## Quickstart
 
@@ -18,5 +18,3 @@ production.
 git submodule update --init --recursive
 cd server && cargo check --workspace
 ```
-
-See `docs/architecture.md`.
