@@ -21,7 +21,7 @@ dependencies = [
  "aap-transport",
  "async-trait",
  "bytes",
- "openh264 0.8.1",
+ "openh264",
  "prost",
  "thiserror",
  "tokio",
@@ -35,7 +35,7 @@ dependencies = [
  "aap-video",
  "anyhow",
  "bytes",
- "openh264 0.6.6",
+ "openh264",
  "parking_lot",
  "tracing",
 ]
@@ -71,7 +71,7 @@ dependencies = [
  "aap-proto",
  "async-trait",
  "bytes",
- "openh264 0.8.1",
+ "openh264",
  "prost",
  "thiserror",
  "tokio",
@@ -495,33 +495,12 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "openh264"
-version = "0.6.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0c1af3a4d35290ba7a46d1ce69cb13ae740a2d72cc2ee00abee3c84bed3dbe5d"
-dependencies = [
- "openh264-sys2 0.6.6",
- "wide",
-]
-
-[[package]]
-name = "openh264"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fef0655e143954965073374f5390411131590d0bc793208aabf7c6785430fa00"
 dependencies = [
- "openh264-sys2 0.8.1",
+ "openh264-sys2",
  "wide",
-]
-
-[[package]]
-name = "openh264-sys2"
-version = "0.6.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77a77c1e18503537113d77b1b1d05274e81fa9f44843c06be2d735adb19f7c9d"
-dependencies = [
- "cc",
- "nasm-rs",
- "walkdir",
 ]
 
 [[package]]
