@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+
+echo "pre-push: checking Rust formatting…"
+if ! cargo fmt --all --check --manifest-path "$REPO_ROOT/server/Cargo.toml" 2>/dev/null; then
+    echo ""
+    echo "ERROR: Rust code is not formatted. Run:"
+    echo "  cargo fmt --all --manifest-path server/Cargo.toml"
+    echo ""
+    exit 1
+fi
+
+echo "pre-push: format OK."

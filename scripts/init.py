@@ -81,6 +81,19 @@ def _check_certs() -> None:
     print("  Generated server/certs/server.key and server/certs/server.crt.", file=sys.stderr)
 
 
+def _setup_git_hooks() -> None:
+    print("Configuring git hooks …", file=sys.stderr)
+    result = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "config", "core.hooksPath"],
+        capture_output=True, text=True,
+    )
+    if result.stdout.strip() == ".githooks":
+        print("  Hooks already configured.", file=sys.stderr)
+        return
+    _run(["git", "-C", str(REPO_ROOT), "config", "core.hooksPath", ".githooks"])
+    print("  Hooks configured — .githooks/ is now active.", file=sys.stderr)
+
+
 def _patch_openauto() -> None:
     print("Checking openauto patches …", file=sys.stderr)
     result = subprocess.run(
@@ -111,6 +124,7 @@ def main() -> int:
     _patch_openauto()
     _check_cargo()
     _check_certs()
+    _setup_git_hooks()
     print("\nInit complete.", file=sys.stderr)
     return 0
 
