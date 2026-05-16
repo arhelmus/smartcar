@@ -63,20 +63,19 @@ def _check_cargo() -> None:
 
 def _check_certs() -> None:
     print("Checking TLS certificates …", file=sys.stderr)
-    certs = (
-        list(CERTS_DIR.glob("*.crt")) +
-        list(CERTS_DIR.glob("*.key")) +
-        list(CERTS_DIR.glob("*.pem"))
-    )
-    if certs:
-        print(f"  Found: {', '.join(f.name for f in certs)}", file=sys.stderr)
-    else:
-        print(
-            "  WARNING: no certs in server/certs/. Generate with:\n"
-            "    openssl req -x509 -newkey rsa:4096 -keyout server/certs/server.key \\\n"
-            "        -out server/certs/server.crt -days 365 -nodes -subj '/CN=localhost'",
-            file=sys.stderr,
-        )
+    key = CERTS_DIR / "server.key"
+    crt = CERTS_DIR / "server.crt"
+    if key.exists() and crt.exists():
+        print("  Certs OK.", file=sys.stderr)
+        return
+    print("  No certs found — generating self-signed cert …", file=sys.stderr)
+    CERTS_DIR.mkdir(parents=True, exist_ok=True)
+    _run([
+        "openssl", "req", "-x509", "-newkey", "rsa:4096",
+        "-keyout", str(key), "-out", str(crt),
+        "-days", "365", "-nodes", "-subj", "/CN=localhost",
+    ], capture_output=True)
+    print("  Generated server/certs/server.key and server/certs/server.crt.", file=sys.stderr)
 
 
 def main() -> int:
@@ -84,9 +83,7 @@ def main() -> int:
     _check_submodules()
     _check_cargo()
     _check_certs()
-    print("\nInit complete. Next steps:", file=sys.stderr)
-    print("  make openauto     # build openauto", file=sys.stderr)
-    print("  make run          # launch openauto + server", file=sys.stderr)
+    print("\nInit complete.", file=sys.stderr)
     return 0
 
 
