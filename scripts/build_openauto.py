@@ -15,6 +15,11 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
+NIX_SHELL = (
+    shutil.which("nix-shell")
+    or "/nix/var/nix/profiles/default/bin/nix-shell"
+)
+
 import common
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
@@ -45,18 +50,18 @@ def _cmake_prefix_path() -> str:
     return ";".join(parts)
 
 
-def _check_nix() -> bool:
-    if not os.environ.get("IN_NIX_SHELL"):
-        print(
-            "ERROR: not running inside a Nix shell.\n"
-            "Enter the shell first:\n"
-            "  nix-shell --pure\n"
-            "or run directly:\n"
-            "  nix-shell --pure --run 'python3 scripts/build_openauto.py'",
-            file=sys.stderr,
-        )
-        return False
-    return True
+def _check_nix() -> None:
+    """Re-exec inside nix-shell --pure if not already running there."""
+    if os.environ.get("IN_NIX_SHELL"):
+        return
+    if not Path(NIX_SHELL).exists():
+        print("ERROR: nix-shell not found — run 'make init' to install Nix.", file=sys.stderr)
+        raise SystemExit(1)
+    script = str(Path(__file__).resolve())
+    cmd = " ".join(["python3", script] + sys.argv[1:])
+    print(f"Re-running inside nix-shell --pure …", file=sys.stderr)
+    os.chdir(str(common.REPO_ROOT))  # shell.nix lives in repo root
+    os.execv(NIX_SHELL, [NIX_SHELL, "--pure", "--run", cmd])
 
 
 def _check_submodules() -> bool:
@@ -124,8 +129,7 @@ _FINDER_OVERRIDES: List[str] = [
 
 def build_openauto(rebuild: bool = False) -> None:
     """Build aasdk + openauto from source inside the active Nix shell."""
-    if not _check_nix():
-        raise SystemExit(1)
+    _check_nix()
     if not _check_submodules():
         raise SystemExit(1)
 
@@ -184,14 +188,9 @@ def build_openauto(rebuild: bool = False) -> None:
 # ── CLI entry point ────────────────────────────────────────────────────────────
 
 def main() -> int:
-    if sys.platform != "darwin":
-        print("This script only runs on macOS.", file=sys.stderr)
-        return 1
-
     parser = argparse.ArgumentParser(description="Build aasdk + openauto inside the Nix shell.")
     parser.add_argument("--rebuild", action="store_true", help="Force a clean rebuild.")
     args = parser.parse_args()
-
     build_openauto(rebuild=args.rebuild)
     return 0
 
