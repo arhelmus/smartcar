@@ -36,9 +36,9 @@ For any question about the AA wire protocol, **consult `docs/protocol/` first**:
 
 | Repo | Role | Local vendor path |
 |------|------|-------------------|
-| https://github.com/tomasz-grobelny/AACS | Server (`AAServer`) — **behavioural ground truth** | _(cloned externally; see `/tmp/aa_investigate/AACS` if still present)_ |
-| https://github.com/opencardev/aasdk | Client lib — framing, message-id enums, full channel catalog | `server/third_party/` (partial) |
-| https://github.com/opencardev/AAProto | Protocol — canonical protobuf schemas | _(external)_ |
+| https://github.com/tomasz-grobelny/AACS | Server (`AAServer`) — **behavioural ground truth** | `server/third_party/AACS` |
+| https://github.com/opencardev/aasdk | Client lib — framing, message-id enums, full channel catalog | `server/third_party/aasdk` |
+| https://github.com/opencardev/AAProto | Protocol — canonical protobuf schemas | `server/third_party/AAProto` |
 
 When validating a protocol doc claim:
 1. Check AACS `AAServer/src/` for **behavioural** truth (state machines, call order, blocking).
