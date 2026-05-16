@@ -1,0 +1,29 @@
+diff --git a/src/autoapp/Projection/QtVideoOutput.cpp b/src/autoapp/Projection/QtVideoOutput.cpp
+index 7be4dfe..9609bdd 100644
+--- a/src/autoapp/Projection/QtVideoOutput.cpp
++++ b/src/autoapp/Projection/QtVideoOutput.cpp
+@@ -105,21 +105,9 @@ void QtVideoOutput::onStartPlayback()
+     videoWidget_->setAttribute(Qt::WA_OpaquePaintEvent, true);
+     videoWidget_->setAttribute(Qt::WA_NoSystemBackground, true);
+     videoWidget_->setAspectRatioMode(Qt::IgnoreAspectRatio);
+-    videoWidget_->setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
+-    
+-    // Get the physical screen geometry and set widget to exactly match it
+-    QScreen *screen = QGuiApplication::primaryScreen();
+-    if (screen != nullptr) {
+-        QRect screenGeometry = screen->geometry();
+-        videoWidget_->setGeometry(screenGeometry);
+-        OPENAUTO_LOG(info) << "[QtVideoOutput] Set video widget geometry to: " 
+-                           << screenGeometry.width() << "x" << screenGeometry.height()
+-                           << " at (" << screenGeometry.x() << "," << screenGeometry.y() << ")";
+-    } else {
+-        // Fallback to fullscreen if screen detection fails
+-        videoWidget_->setFullScreen(true);
+-        OPENAUTO_LOG(warning) << "[QtVideoOutput] Could not detect screen, using setFullScreen()";
+-    }
++    videoWidget_->setWindowFlags(Qt::Window);
++    videoWidget_->setWindowTitle("Android Auto");
++    videoWidget_->resize(1280, 960);
+     
+     videoWidget_->raise();
+     videoWidget_->show();
