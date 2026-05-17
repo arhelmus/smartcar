@@ -57,7 +57,10 @@ def main() -> int:
         "--target", default=common.DEFAULT_TARGET, metavar="HOST:PORT",
         help=f"Head-unit address (default: {common.DEFAULT_TARGET}).",
     )
-    parser.add_argument("--release", action="store_true", help="Build in release mode.")
+    build_mode = parser.add_mutually_exclusive_group()
+    build_mode.add_argument("--debug",   dest="release", action="store_false", help="Build in debug mode (default).")
+    build_mode.add_argument("--release", dest="release", action="store_true",  help="Build in release mode.")
+    parser.set_defaults(release=False)
     parser.add_argument(
         "--log", default=common.DEFAULT_LOG, metavar="LEVEL",
         help=f"RUST_LOG level (default: {common.DEFAULT_LOG}).",

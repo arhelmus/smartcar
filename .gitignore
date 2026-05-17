@@ -16,6 +16,9 @@ server/certs/*.crt
 server/certs/*.pem
 !server/certs/.gitkeep
 
+# local environment (personal IPs, MACs — never commit)
+.env.local
+
 # run_server detached-mode artifacts
 .smartcar-server.pid
-smartcar-server.log
+*.log

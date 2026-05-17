@@ -64,6 +64,34 @@ def _check_cargo() -> None:
         print("  WARNING: cargo not found — install Rust via https://rustup.rs/", file=sys.stderr)
 
 
+def _check_cross() -> None:
+    print("Checking cross-compilation tools …", file=sys.stderr)
+
+    if not shutil.which("rustup"):
+        print("  WARNING: rustup not found — install from https://rustup.rs/", file=sys.stderr)
+        print("           or: brew install rustup-init && rustup-init", file=sys.stderr)
+        return
+
+    if not shutil.which("cross"):
+        print("  WARNING: 'cross' not found — install with: cargo install cross", file=sys.stderr)
+        return
+
+    # The cross Docker image for aarch64 is amd64-only; cross mounts the
+    # x86_64-unknown-linux-gnu toolchain from the host into the container.
+    # On Apple Silicon this toolchain must be force-installed.
+    HOST_TOOLCHAIN = "stable-x86_64-unknown-linux-gnu"
+    installed = subprocess.run(
+        ["rustup", "toolchain", "list"], capture_output=True, text=True,
+    ).stdout
+    if HOST_TOOLCHAIN in installed:
+        print("  cross + host toolchain OK.", file=sys.stderr)
+        return
+
+    print(f"  Installing host toolchain '{HOST_TOOLCHAIN}' for cross (Apple Silicon, one-time) …",
+          file=sys.stderr)
+    _run(["rustup", "toolchain", "add", HOST_TOOLCHAIN, "--force-non-host", "--profile", "minimal"])
+
+
 def _check_certs() -> None:
     print("Checking TLS certificates …", file=sys.stderr)
     key = CERTS_DIR / "server.key"
@@ -123,6 +151,7 @@ def main() -> int:
     _check_submodules()
     _patch_openauto()
     _check_cargo()
+    _check_cross()
     _check_certs()
     _setup_git_hooks()
     print("\nInit complete.", file=sys.stderr)
