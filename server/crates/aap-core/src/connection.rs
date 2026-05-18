@@ -7,18 +7,18 @@
 
 use std::time::Duration;
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::Bytes;
 use prost::Message;
 use tracing::{debug, info, warn};
 
 use aap_contracts::{AapError, Result};
 use aap_contracts::{ChannelId, FrameFlags, MessageType, Transport};
+use aap_video::VideoFrameReceiver;
 
 use crate::control::{
     build_data_frame, encode_control, encode_control_on, parse_message_type, proto_body,
 };
 use crate::registry::ServiceRegistry;
-use crate::video_encoder::{TestFrameEncoder, VIDEO_HEIGHT, VIDEO_WIDTH};
 
 // ── Wire constants ────────────────────────────────────────────────────────────
 
@@ -52,8 +52,10 @@ const MEDIA_MSG_DATA: u16 = 0x0000;
 const MSG_VIDEO_FOCUS_REQUEST: u16 = 0x8007;
 /// HU → Phone: video focus granted; phone should start streaming.
 const MSG_VIDEO_FOCUS_NOTIFICATION: u16 = 0x8008;
-/// Target frame interval for the test pattern streamer.
+/// How often the connection checks for a new video frame from the producer.
 const VIDEO_FRAME_INTERVAL: Duration = Duration::from_millis(33); // ~30 fps
+/// How often the audio tick fires to drain the mixer and send PCM frames.
+const AUDIO_FRAME_INTERVAL: Duration = Duration::from_millis(10); // 10 ms chunks
 
 // ── Connection ────────────────────────────────────────────────────────────────
 
@@ -64,37 +66,24 @@ const VIDEO_FRAME_INTERVAL: Duration = Duration::from_millis(33); // ~30 fps
 pub struct Connection<T: Transport> {
     transport: T,
     registry: ServiceRegistry,
-    /// Set to `true` after the head unit grants video focus; triggers frame streaming.
+    /// Set to `true` after the head unit grants video focus; triggers frame forwarding.
     video_active: bool,
-    /// Monotonically increasing frame counter used for timestamps.
-    video_frame_count: u64,
-    /// H.264 test-pattern encoder; `None` if openh264 failed to initialise.
-    video_encoder: Option<TestFrameEncoder>,
+    /// Latest encoded video frame from the producer (watch channel read-end).
+    frame_rx: VideoFrameReceiver,
 }
 
 impl<T: Transport> Connection<T> {
-    /// Wrap a transport and a service registry into a new connection.
-    pub fn new(transport: T, registry: ServiceRegistry) -> Self {
-        let video_encoder = match TestFrameEncoder::new() {
-            Ok(enc) => {
-                info!(
-                    width = VIDEO_WIDTH,
-                    height = VIDEO_HEIGHT,
-                    "video encoder ready"
-                );
-                Some(enc)
-            }
-            Err(e) => {
-                warn!("failed to initialise video encoder: {e}; video will not stream");
-                None
-            }
-        };
+    /// Wrap a transport, service registry, and video frame receiver into a new connection.
+    ///
+    /// `frame_rx` is the read-end of a [`video_frame_channel`](aap_video::video_frame_channel).
+    /// The matching sender is held by a frame producer (e.g. [`aap_testkit::TestVideoProducer`]
+    /// or the Flutter embedder), which pushes encoded NAL units independently.
+    pub fn new(transport: T, registry: ServiceRegistry, frame_rx: VideoFrameReceiver) -> Self {
         Self {
             transport,
             registry,
             video_active: false,
-            video_frame_count: 0,
-            video_encoder,
+            frame_rx,
         }
     }
 
@@ -311,11 +300,16 @@ impl<T: Transport> Connection<T> {
 
     /// Read frames forever and dispatch them to services or handle control messages.
     ///
-    /// While `video_active` is set the loop also fires a ~30 fps tick that
-    /// encodes and sends one H.264 test-pattern frame per interval.
+    /// Runs two background tickers alongside the receive loop:
+    /// - **video** (~30 fps): forwards the latest encoded frame from the producer.
+    /// - **audio** (10 ms): calls `tick()` on every registered audio service so
+    ///   each mixer drains its sources and emits the next PCM chunk.
     async fn dispatch_loop(&mut self) -> Result<()> {
         let mut video_ticker = tokio::time::interval(VIDEO_FRAME_INTERVAL);
         video_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        let mut audio_ticker = tokio::time::interval(AUDIO_FRAME_INTERVAL);
+        audio_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
@@ -357,32 +351,47 @@ impl<T: Transport> Connection<T> {
                         warn!("error sending video frame: {e}");
                     }
                 }
+
+                _ = audio_ticker.tick() => {
+                    if let Err(e) = self.tick_audio_services().await {
+                        warn!("error on audio tick: {e}");
+                    }
+                }
             }
         }
     }
 
-    /// Encode one H.264 test-pattern frame and send it to the head unit.
-    async fn send_video_frame(&mut self) -> Result<()> {
-        let encoder = match self.video_encoder.as_mut() {
-            Some(e) => e,
-            None => return Ok(()),
-        };
+    /// Call `tick()` on every registered audio service and forward returned frames.
+    async fn tick_audio_services(&mut self) -> Result<()> {
+        for channel in [
+            ChannelId::MediaAudio,
+            ChannelId::SpeechAudio,
+            ChannelId::SystemAudio,
+        ] {
+            if let Some(svc) = self.registry.get_mut(channel) {
+                let frames = svc.tick().await.map_err(AapError::Service)?;
+                for frame in frames {
+                    self.transport.send_frame(frame).await?;
+                }
+            }
+        }
+        Ok(())
+    }
 
-        let nal_data = encoder.next_frame();
-        if nal_data.is_empty() {
+    /// Forward the latest video frame from the producer to the head unit, if
+    /// a new one has arrived since the last tick.
+    async fn send_video_frame(&mut self) -> Result<()> {
+        if !self.frame_rx.has_changed().unwrap_or(false) {
             return Ok(());
         }
-
-        // MEDIA_MESSAGE_DATA payload: [timestamp_us as u64 BE, H.264 Annex-B bytes]
-        let timestamp_us = self.video_frame_count * 1_000_000 / 30;
-        self.video_frame_count += 1;
-
-        let mut body = BytesMut::with_capacity(8 + nal_data.len());
-        body.put_u64(timestamp_us);
-        body.put_slice(&nal_data);
-
-        let frame = build_data_frame(ChannelId::Video, MEDIA_MSG_DATA, body.freeze());
-        self.transport.send_frame(frame).await?;
+        // borrow_and_update marks the value as seen so has_changed returns
+        // false until the producer sends the next frame.
+        let payload = self.frame_rx.borrow_and_update().clone();
+        if let Some(bytes) = payload {
+            // bytes = [timestamp_us : u64 BE][H.264 Annex-B NAL unit(s)]
+            let frame = build_data_frame(ChannelId::Video, MEDIA_MSG_DATA, bytes);
+            self.transport.send_frame(frame).await?;
+        }
         Ok(())
     }
 
@@ -479,7 +488,10 @@ impl<T: Transport> Connection<T> {
                         self.handle_video_sink_frame(message_id).await?;
                     }
                     ChannelId::MediaAudio | ChannelId::SpeechAudio | ChannelId::SystemAudio => {
-                        self.handle_audio_sink_frame(channel, message_id).await?;
+                        debug!(
+                            ?channel,
+                            message_id, "audio: no service registered; dropping"
+                        );
                     }
                     _ => {
                         warn!(
@@ -544,30 +556,6 @@ impl<T: Transport> Connection<T> {
             }
             other => {
                 debug!(other, "video sink: unhandled message id; dropping");
-            }
-        }
-        Ok(())
-    }
-
-    /// Handle a data frame on one of the audio sink channels (4, 5, 6).
-    ///
-    /// After we send `MEDIA_MESSAGE_SETUP`, the head unit replies with
-    /// `MEDIA_MESSAGE_CONFIG`.  We acknowledge by sending `MEDIA_MESSAGE_START`
-    /// so the head unit knows we are ready to stream audio.
-    async fn handle_audio_sink_frame(&mut self, channel: ChannelId, message_id: u16) -> Result<()> {
-        match message_id {
-            MEDIA_MSG_CONFIG => {
-                info!(?channel, "audio: received config, sending start");
-                // Start proto: { session_id(varint,f1)=1, configuration_index(varint,f2)=0 }
-                let body = Bytes::from_static(&[0x08, 0x01, 0x10, 0x00]);
-                let frame = build_data_frame(channel, MEDIA_MSG_START, body);
-                self.transport.send_frame(frame).await?;
-            }
-            other => {
-                debug!(
-                    ?channel,
-                    other, "audio sink: unhandled message id; dropping"
-                );
             }
         }
         Ok(())

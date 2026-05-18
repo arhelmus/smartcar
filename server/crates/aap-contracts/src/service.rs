@@ -58,4 +58,13 @@ pub trait Service: Send {
     /// inbound payload; `payload` is the remainder (the protobuf body).
     async fn handle(&mut self, message_id: u16, payload: Bytes)
         -> Result<Vec<Frame>, ServiceError>;
+
+    /// Periodic tick — called by the connection loop on a fixed interval.
+    ///
+    /// Services that produce outbound data on a timer (e.g. audio PCM frames)
+    /// override this method.  The default implementation is a no-op so existing
+    /// services (`VideoService`, `InputService`, …) require no changes.
+    async fn tick(&mut self) -> Result<Vec<Frame>, ServiceError> {
+        Ok(vec![])
+    }
 }

@@ -10,6 +10,8 @@ aap-contracts      = { workspace = true }
 aap-core           = { workspace = true }
 aap-transport      = { workspace = true }
 aap-video          = { workspace = true }
+aap-audio          = { workspace = true }
+aap-testkit        = { workspace = true }
 aap-flutter        = { workspace = true, optional = true }
 anyhow             = { workspace = true }
 clap               = { workspace = true }

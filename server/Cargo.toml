@@ -6,6 +6,8 @@ members = [
     "crates/aap-transport",
     "crates/aap-core",
     "crates/aap-video",
+    "crates/aap-audio",
+    "crates/aap-testkit",
     "crates/aap-flutter",
     "crates/smartcar-server",
 ]
@@ -23,6 +25,8 @@ aap-proto     = { path = "crates/aap-proto" }
 aap-transport = { path = "crates/aap-transport" }
 aap-core      = { path = "crates/aap-core" }
 aap-video     = { path = "crates/aap-video" }
+aap-audio     = { path = "crates/aap-audio" }
+aap-testkit   = { path = "crates/aap-testkit" }
 aap-flutter   = { path = "crates/aap-flutter" }
 
 # External — pinned majors, agents in W1–W6 may bump minor versions
