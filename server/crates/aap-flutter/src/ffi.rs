@@ -141,7 +141,6 @@ pub struct FlutterDesktopPixelBuffer {
 
 // ── Engine entry points ───────────────────────────────────────────────────────
 
-#[link(name = "flutter_engine")]
 unsafe extern "C" {
     /// Initialise and run the Flutter engine.
     ///
