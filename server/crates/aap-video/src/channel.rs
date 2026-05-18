@@ -1,18 +1,24 @@
-//! Watch-channel types for the video frame production pipeline.
+//! Ordered frame channel + start gate for the video production pipeline.
 //!
-//! The render thread (Flutter embedder or testkit) holds the
-//! [`VideoFrameSender`] and pushes encoded frames via
-//! [`VideoFrameSender::send`].  [`Connection`] holds the
-//! [`VideoFrameReceiver`] and reads the latest frame on each 30 fps tick.
+//! H.264 is delta-coded: every NAL must reach the head unit **in order and
+//! without loss**, and the stream must **begin on a keyframe (IDR)** or the
+//! decoder never initialises.  Two primitives enforce that:
 //!
-//! Using a `watch` channel gives "latest frame wins" semantics: if the render
-//! thread runs faster than the send rate, stale intermediate frames are
-//! automatically discarded and only the most recent one is forwarded.
+//! - [`video_frame_channel`] — a bounded **ordered** mpsc.  The producer
+//!   (Flutter embedder or testkit) sends every encoded frame; [`Connection`]
+//!   drains them in sequence on each ~30 fps tick.  Bounded so a stalled
+//!   consumer applies back-pressure (frames delayed, never dropped) instead
+//!   of growing memory without limit.
+//! - [`video_start_gate`] — a one-shot focus gate.  The producer blocks on
+//!   [`VideoStartRx::wait`] until [`Connection`] fires [`VideoStartTx::signal`]
+//!   on `VIDEO_FOCUS_NOTIFICATION`.  This guarantees the producer's *first*
+//!   encoded frame (a fresh-encoder IDR with SPS/PPS) is the first frame the
+//!   head unit sees — nothing is encoded into a void before focus is granted.
 //!
 //! # Frame payload format
 //!
-//! The `Bytes` value carried by the channel is the body of an
-//! `AV_MEDIA_WITH_TIMESTAMP_INDICATION` (msg id `0x0000`) frame:
+//! Each `Bytes` value is the body of an `AV_MEDIA_WITH_TIMESTAMP_INDICATION`
+//! (msg id `0x0000`) frame:
 //!
 //! ```text
 //! [timestamp_us : u64 BE][H.264 Annex-B NAL unit(s)]
@@ -21,24 +27,57 @@
 //! `Connection` prepends the 2-byte message id before writing to the wire.
 
 use bytes::Bytes;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, oneshot};
 
-/// The value type carried through the video frame channel.
-///
-/// `None` until the first frame is produced.
-pub type VideoFramePayload = Option<Bytes>;
+/// How many encoded frames the channel buffers before the producer blocks.
+/// 16 frames ≈ 0.5 s at 30 fps — enough to ride out scheduling jitter
+/// without unbounded growth.
+const CHANNEL_CAPACITY: usize = 16;
 
-/// Write-end of the video frame channel — held by the frame producer.
-pub type VideoFrameSender = watch::Sender<VideoFramePayload>;
+/// Write-end of the ordered video frame channel — held by the frame producer.
+pub type VideoFrameSender = mpsc::Sender<Bytes>;
 
-/// Read-end of the video frame channel — held by [`Connection`].
-pub type VideoFrameReceiver = watch::Receiver<VideoFramePayload>;
+/// Read-end of the ordered video frame channel — held by [`Connection`].
+pub type VideoFrameReceiver = mpsc::Receiver<Bytes>;
 
 /// Create a linked ([`VideoFrameSender`], [`VideoFrameReceiver`]) pair.
 ///
-/// Call this once in `main` before constructing the producer and the
-/// connection; hand the sender to the producer and the receiver to
-/// [`Connection::new`].
+/// Hand the sender to the producer and the receiver to [`Connection::new`].
 pub fn video_frame_channel() -> (VideoFrameSender, VideoFrameReceiver) {
-    watch::channel(None)
+    mpsc::channel(CHANNEL_CAPACITY)
+}
+
+/// Connection-side trigger that releases the video producer once the head
+/// unit has granted video focus.
+pub struct VideoStartTx(oneshot::Sender<()>);
+
+impl VideoStartTx {
+    /// Release the producer so it starts encoding from a fresh IDR.
+    ///
+    /// A no-op if the producer is already gone (receiver dropped).
+    pub fn signal(self) {
+        let _ = self.0.send(());
+    }
+}
+
+/// Producer-side gate — blocks the encode loop until focus is granted.
+pub struct VideoStartRx(oneshot::Receiver<()>);
+
+impl VideoStartRx {
+    /// Block the current (blocking) thread until [`VideoStartTx::signal`] is
+    /// called.  Returns `false` if the trigger was dropped without signalling
+    /// (connection torn down before focus) — the producer should then stop.
+    pub fn wait(self) -> bool {
+        self.0.blocking_recv().is_ok()
+    }
+}
+
+/// Create a linked ([`VideoStartTx`], [`VideoStartRx`]) focus gate.
+///
+/// `Connection` holds the [`VideoStartTx`] and fires it when
+/// `VIDEO_FOCUS_NOTIFICATION` arrives; the producer holds the
+/// [`VideoStartRx`] and waits on it before its first encode.
+pub fn video_start_gate() -> (VideoStartTx, VideoStartRx) {
+    let (tx, rx) = oneshot::channel();
+    (VideoStartTx(tx), VideoStartRx(rx))
 }

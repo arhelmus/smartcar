@@ -14,9 +14,12 @@
 //!
 //! ```no_run
 //! # use aap_core::{Connection, ServiceRegistry};
+//! # use aap_video::{video_frame_channel, video_start_gate};
 //! # async fn example<T: aap_contracts::Transport>(transport: T) {
 //! let registry = ServiceRegistry::new();
-//! let conn = Connection::new(transport, registry);
+//! let (_frame_tx, frame_rx) = video_frame_channel();
+//! let (video_start_tx, _video_start_rx) = video_start_gate();
+//! let conn = Connection::new(transport, registry, frame_rx, video_start_tx);
 //! conn.run().await.unwrap();
 //! # }
 //! ```

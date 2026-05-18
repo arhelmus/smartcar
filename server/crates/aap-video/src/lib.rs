@@ -20,7 +20,10 @@ mod config;
 mod service;
 mod sink;
 
-pub use channel::{video_frame_channel, VideoFrameReceiver, VideoFrameSender};
+pub use channel::{
+    video_frame_channel, video_start_gate, VideoFrameReceiver, VideoFrameSender, VideoStartRx,
+    VideoStartTx,
+};
 pub use config::VideoConfig;
 pub use service::VideoService;
 pub use sink::{FrameSink, NullSink};

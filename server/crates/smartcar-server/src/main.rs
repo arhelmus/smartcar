@@ -29,7 +29,7 @@ use aap_testkit::{
     LoopingWavStream, TestVideoProducer, ASSET_KICK_IN, ASSET_SNARE_UNDER, ASSET_SYNTH_01,
 };
 use aap_transport::TcpTransport;
-use aap_video::{video_frame_channel, VideoConfig, VideoService};
+use aap_video::{video_frame_channel, video_start_gate, VideoConfig, VideoService, VideoStartRx};
 
 /// Which byte-level transport to use for the AA connection.
 #[derive(ValueEnum, Clone, Debug, PartialEq)]
@@ -72,9 +72,12 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    // ── Video frame channel ───────────────────────────────────────────────────
-    // The sender goes to the frame producer; the receiver goes to Connection.
+    // ── Video frame channel + focus gate ──────────────────────────────────────
+    // The sender goes to the producer, the receiver to Connection. The start
+    // gate keeps the producer idle until the head unit grants video focus, so
+    // its first encoded frame (a fresh IDR) is the first frame on the wire.
     let (frame_tx, frame_rx) = video_frame_channel();
+    let (video_start_tx, video_start_rx) = video_start_gate();
 
     // ── Audio mixers ──────────────────────────────────────────────────────────
     // Use the canonical per-stream formats the head unit expects.
@@ -91,6 +94,7 @@ async fn main() -> anyhow::Result<()> {
     } else {
         start_testkit_producers(
             frame_tx,
+            video_start_rx,
             &mut media_mixer,
             &mut speech_mixer,
             &mut system_mixer,
@@ -122,7 +126,9 @@ async fn main() -> anyhow::Result<()> {
             let stream = TcpStream::connect(&args.target).await?;
             tracing::info!("TCP connection established");
             let transport = TcpTransport::new(stream);
-            Connection::new(transport, registry, frame_rx).run().await?;
+            Connection::new(transport, registry, frame_rx, video_start_tx)
+                .run()
+                .await?;
         }
         TransportChoice::Usb => {
             #[cfg(target_os = "linux")]
@@ -132,7 +138,9 @@ async fn main() -> anyhow::Result<()> {
                     "USB: starting AOAP handshake — plug the USB cable into the head unit"
                 );
                 let transport = UsbTransport::connect().await?;
-                Connection::new(transport, registry, frame_rx).run().await?;
+                Connection::new(transport, registry, frame_rx, video_start_tx)
+                    .run()
+                    .await?;
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -152,13 +160,15 @@ async fn main() -> anyhow::Result<()> {
 
 fn start_testkit_producers(
     frame_tx: aap_video::VideoFrameSender,
+    video_start_rx: VideoStartRx,
     media_mixer: &mut MixerSink,
     speech_mixer: &mut MixerSink,
     system_mixer: &mut MixerSink,
 ) -> anyhow::Result<()> {
-    // Video: colour-cycling H.264 test pattern at 30 fps.
+    // Video: colour-cycling H.264 test pattern at 30 fps. The producer stays
+    // idle until Connection signals video focus via the start gate.
     let video_producer = TestVideoProducer::new(30)?;
-    tokio::task::spawn_blocking(move || video_producer.run(frame_tx));
+    tokio::task::spawn_blocking(move || video_producer.run(frame_tx, video_start_rx));
 
     // Audio: pull-based looping WAV streams — no threads, no channels, no
     // timing drift.  The mixer tick drives sample generation synchronously.

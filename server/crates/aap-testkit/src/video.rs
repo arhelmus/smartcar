@@ -14,7 +14,7 @@ use openh264::{
 };
 use tracing::{info, warn};
 
-use aap_video::VideoFrameSender;
+use aap_video::{VideoFrameSender, VideoStartRx};
 
 const WIDTH: usize = 800;
 const HEIGHT: usize = 480;
@@ -25,9 +25,10 @@ const HEIGHT: usize = 480;
 ///
 /// ```ignore
 /// let (tx, rx) = video_frame_channel();
+/// let (start_tx, start_rx) = video_start_gate();
 /// let producer = TestVideoProducer::new(30)?;
-/// tokio::task::spawn_blocking(move || producer.run(tx));
-/// // Give rx to Connection::new(…, rx)
+/// tokio::task::spawn_blocking(move || producer.run(tx, start_rx));
+/// // Give rx + start_tx to Connection::new(…, rx, start_tx)
 /// ```
 pub struct TestVideoProducer {
     encoder: Encoder,
@@ -58,11 +59,19 @@ impl TestVideoProducer {
         })
     }
 
-    /// Blocking encode loop.  Runs until the [`VideoFrameSender`] is dropped
-    /// (all receivers gone), then returns.
+    /// Blocking encode loop.  Waits on the focus gate, then encodes from a
+    /// fresh IDR and streams every NAL in order until the receiver is dropped.
     ///
     /// Call this inside `tokio::task::spawn_blocking` or `std::thread::spawn`.
-    pub fn run(mut self, tx: VideoFrameSender) {
+    pub fn run(mut self, tx: VideoFrameSender, start: VideoStartRx) {
+        // Block until the head unit grants video focus.  Encoding only now
+        // guarantees the first frame the head unit sees is a keyframe.
+        if !start.wait() {
+            info!("test video producer: focus gate dropped before signal, stopping");
+            return;
+        }
+        info!("test video producer: focus granted — starting encode");
+
         let interval = Duration::from_secs_f64(1.0 / self.fps as f64);
         let mut deadline = Instant::now() + interval;
 
@@ -74,9 +83,10 @@ impl TestVideoProducer {
                 let mut buf = BytesMut::with_capacity(8 + nal.len());
                 buf.put_u64(timestamp_us);
                 buf.put_slice(&nal);
-                // watch::send returns Err only when all receivers are gone.
-                if tx.send(Some(buf.freeze())).is_err() {
-                    info!("test video producer: all receivers dropped, stopping");
+                // Bounded ordered channel: blocks if the consumer is behind
+                // (back-pressure) and errs only once the receiver is gone.
+                if tx.blocking_send(buf.freeze()).is_err() {
+                    info!("test video producer: receiver dropped, stopping");
                     return;
                 }
             }

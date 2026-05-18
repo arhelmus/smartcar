@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 
 use aap_contracts::{AapError, Result};
 use aap_contracts::{ChannelId, FrameFlags, MessageType, Transport};
-use aap_video::VideoFrameReceiver;
+use aap_video::{VideoFrameReceiver, VideoStartTx};
 
 use crate::control::{
     build_data_frame, encode_control, encode_control_on, parse_message_type, proto_body,
@@ -68,22 +68,32 @@ pub struct Connection<T: Transport> {
     registry: ServiceRegistry,
     /// Set to `true` after the head unit grants video focus; triggers frame forwarding.
     video_active: bool,
-    /// Latest encoded video frame from the producer (watch channel read-end).
+    /// Ordered encoded-frame stream from the producer (mpsc read-end).
     frame_rx: VideoFrameReceiver,
+    /// Fired once when video focus is granted, releasing the gated producer.
+    video_start: Option<VideoStartTx>,
 }
 
 impl<T: Transport> Connection<T> {
     /// Wrap a transport, service registry, and video frame receiver into a new connection.
     ///
-    /// `frame_rx` is the read-end of a [`video_frame_channel`](aap_video::video_frame_channel).
-    /// The matching sender is held by a frame producer (e.g. [`aap_testkit::TestVideoProducer`]
-    /// or the Flutter embedder), which pushes encoded NAL units independently.
-    pub fn new(transport: T, registry: ServiceRegistry, frame_rx: VideoFrameReceiver) -> Self {
+    /// `frame_rx` is the read-end of a [`video_frame_channel`](aap_video::video_frame_channel);
+    /// `video_start` is the trigger half of a [`video_start_gate`](aap_video::video_start_gate).
+    /// The matching sender and gate receiver are held by a frame producer (e.g.
+    /// [`aap_testkit::TestVideoProducer`] or the Flutter embedder), which only
+    /// begins encoding once focus is granted, then streams NALs in order.
+    pub fn new(
+        transport: T,
+        registry: ServiceRegistry,
+        frame_rx: VideoFrameReceiver,
+        video_start: VideoStartTx,
+    ) -> Self {
         Self {
             transport,
             registry,
             video_active: false,
             frame_rx,
+            video_start: Some(video_start),
         }
     }
 
@@ -378,21 +388,26 @@ impl<T: Transport> Connection<T> {
         Ok(())
     }
 
-    /// Forward the latest video frame from the producer to the head unit, if
-    /// a new one has arrived since the last tick.
+    /// Forward every encoded frame queued by the producer, in order.
+    ///
+    /// Drains all NALs currently buffered in the ordered channel each tick so
+    /// none are dropped — H.264 is delta-coded and a single skipped frame
+    /// corrupts the GOP until the next IDR.
     async fn send_video_frame(&mut self) -> Result<()> {
-        if !self.frame_rx.has_changed().unwrap_or(false) {
-            return Ok(());
+        loop {
+            match self.frame_rx.try_recv() {
+                Ok(bytes) => {
+                    // bytes = [timestamp_us : u64 BE][H.264 Annex-B NAL unit(s)]
+                    let frame = build_data_frame(ChannelId::Video, MEDIA_MSG_DATA, bytes);
+                    self.transport.send_frame(frame).await?;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return Ok(()),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    warn!("video: producer channel disconnected");
+                    return Ok(());
+                }
+            }
         }
-        // borrow_and_update marks the value as seen so has_changed returns
-        // false until the producer sends the next frame.
-        let payload = self.frame_rx.borrow_and_update().clone();
-        if let Some(bytes) = payload {
-            // bytes = [timestamp_us : u64 BE][H.264 Annex-B NAL unit(s)]
-            let frame = build_data_frame(ChannelId::Video, MEDIA_MSG_DATA, bytes);
-            self.transport.send_frame(frame).await?;
-        }
-        Ok(())
     }
 
     // ── Control frame handler ─────────────────────────────────────────────────
@@ -508,8 +523,13 @@ impl<T: Transport> Connection<T> {
             && message_id == MSG_VIDEO_FOCUS_NOTIFICATION
             && !self.video_active
         {
-            info!("video: focus granted — starting test-pattern stream");
+            info!("video: focus granted — releasing producer and streaming");
             self.video_active = true;
+            // Release the gated producer so its first encoded frame (a fresh
+            // IDR) is the first frame forwarded to the head unit.
+            if let Some(start) = self.video_start.take() {
+                start.signal();
+            }
         }
 
         Ok(())
