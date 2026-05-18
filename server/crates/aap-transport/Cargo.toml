@@ -13,3 +13,9 @@ thiserror     = { workspace = true }
 tokio         = { workspace = true }
 tracing       = { workspace = true }
 openssl       = { workspace = true }
+
+[features]
+# Statically build & link OpenSSL instead of using the system library.
+# Enabled for cross/board builds where the target's libssl ABI differs
+# from the cross toolchain's (e.g. Debian 13 ships libssl.so.3 only).
+openssl-vendored = ["openssl/vendored"]

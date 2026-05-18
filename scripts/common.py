@@ -127,7 +127,13 @@ def server_binary_path(release: bool) -> Path:
 
 
 def cargo_cross_build_cmd(release: bool) -> list[str]:
-    cmd = ["cross", "build", "--target", CROSS_TARGET, "--bin", "smartcar-server"]
+    # Vendor OpenSSL statically: the cross toolchain links libssl 1.1 but the
+    # board (Debian 13) ships only libssl.so.3, so a dynamic link never
+    # resolves. Static vendoring makes the ARM binary self-contained.
+    cmd = [
+        "cross", "build", "--target", CROSS_TARGET,
+        "--bin", "smartcar-server", "--features", "openssl-vendored",
+    ]
     if release:
         cmd.append("--release")
     return cmd
