@@ -14,10 +14,16 @@
 //!
 //! # Frame producer selection
 //!
-//! | Build / flag              | Video producer          | Audio producer      |
+//! Flutter is the **default** renderer.  `--testkit` forces the synthetic
+//! producers instead.  A binary built without `--features flutter`, or one
+//! where the Flutter engine fails to start, transparently falls back to the
+//! testkit producers at runtime (a warning is logged).
+//!
+//! | Flag / build              | Video producer          | Audio producer      |
 //! |---------------------------|-------------------------|---------------------|
-//! | default (no flag)         | TestVideoProducer       | TestAudioProducer   |
-//! | `--flutter` (+ feature)   | Flutter embedder (TODO) | Flutter method chan  |
+//! | default                   | Flutter embedder        | (silent for now)    |
+//! | `--testkit`               | TestVideoProducer       | looping WAV mixers  |
+//! | default, no `flutter` feat| TestVideoProducer (fb)  | looping WAV mixers  |
 
 use clap::{Parser, ValueEnum};
 use tokio::net::TcpStream;
@@ -56,12 +62,13 @@ struct Args {
     #[arg(long, default_value = "127.0.0.1:5001")]
     target: String,
 
-    /// Use the Flutter Embedded renderer instead of the testkit producers.
+    /// Use the synthetic testkit producers instead of the Flutter renderer.
     ///
-    /// Requires `--features flutter` at build time and a compiled Flutter
-    /// bundle:  cd server/flutter-ui && flutter build bundle
+    /// Flutter is the default.  Pass this for bringup / CI validation when you
+    /// want a deterministic colour-cycling video pattern and looping WAV audio
+    /// with no Flutter engine dependency.
     #[arg(long, default_value_t = false)]
-    flutter: bool,
+    testkit: bool,
 }
 
 #[tokio::main]
@@ -89,9 +96,24 @@ async fn main() -> anyhow::Result<()> {
     let mut speech_mixer = MixerSink::new(speech_cfg.clone());
     let mut system_mixer = MixerSink::new(system_cfg.clone());
 
-    if args.flutter {
-        start_flutter_producers(frame_tx)?;
-    } else {
+    // Flutter is the default; --testkit forces the synthetic producers.
+    // If the Flutter renderer can't start (not compiled in, engine init
+    // failure), fall back to the testkit producers so the connection still
+    // comes up.
+    let mut run_testkit = args.testkit;
+    if !run_testkit {
+        match start_flutter_producers(frame_tx.clone()) {
+            Ok(()) => {}
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Flutter renderer unavailable — falling back to testkit producers"
+                );
+                run_testkit = true;
+            }
+        }
+    }
+    if run_testkit {
         start_testkit_producers(
             frame_tx,
             video_start_rx,
