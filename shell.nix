@@ -61,6 +61,19 @@ pkgs.mkShell {
     fi
     # Expose Qt platform plugins (cocoa) at runtime.
     export QT_QPA_PLATFORM_PLUGIN_PATH="${pkgs.qt5.qtbase.bin}/lib/qt-${pkgs.qt5.qtbase.version}/plugins/platforms"
+
+    # GStreamer plugin path — pinned to the exact Nix closure so the Qt
+    # GStreamer backend finds an H.264 decoder (avdec_h264 from gst-libav;
+    # vtdec from gst-plugins-bad/applemedia).  Globbing /nix/store is
+    # unreliable: it depends on what is realised and survives GC.
+    export GST_PLUGIN_PATH="${pkgs.gst_all_1.gstreamer}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-base}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-good}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-plugins-bad}/lib/gstreamer-1.0:${pkgs.gst_all_1.gst-libav}/lib/gstreamer-1.0"
+
+    # NOTE: the runtime-only plugin packages (esp. the H.264 decoder) are
+    # pinned with GC roots by scripts/run_openauto.py, not here — `nix-shell
+    # --pure` strips nix-store from PATH so gcroot creation must happen
+    # outside the pure shell.  Without those roots `nix-collect-garbage`
+    # silently removes the decoder and video projection regresses.
+
     echo "smartcar Nix shell ready. Run:"
     echo "  python3 scripts/run_openauto.py [--clean] [--attached]"
   '';

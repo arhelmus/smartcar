@@ -37,6 +37,41 @@ def _detect_qt_plugin_path() -> str:
     return ":".join(dirs)
 
 
+def _pin_gcroots(gst_plugin_path: str) -> None:
+    """Register Nix GC roots for the runtime-only GStreamer plugin packages.
+
+    The plugins (notably the H.264 decoder in gst-libav / applemedia) are not
+    referenced by the openauto binary, so a `nix-collect-garbage` would delete
+    them and silently break video projection.  An indirect root under
+    .build/gcroots/ keeps them alive.  Run here (outside `nix-shell --pure`,
+    which strips nix-store from PATH) on every launch so the roots self-heal.
+    """
+    nix_store = shutil.which("nix-store") or "/nix/var/nix/profiles/default/bin/nix-store"
+    if not Path(nix_store).exists():
+        print("WARNING: nix-store not found — GStreamer plugins not GC-pinned.", file=sys.stderr)
+        return
+    gcroots = common.REPO_ROOT / ".build" / "gcroots"
+    gcroots.mkdir(parents=True, exist_ok=True)
+    for plugin_dir in gst_plugin_path.split(":"):
+        if not plugin_dir:
+            continue
+        # /nix/store/<hash>-<pkg>/lib/gstreamer-1.0 -> /nix/store/<hash>-<pkg>
+        pkg = plugin_dir.split("/lib/gstreamer-1.0")[0]
+        name = os.path.basename(pkg)
+        if not pkg.startswith("/nix/store/") or not name:
+            continue
+        link = gcroots / name
+        result = subprocess.run(
+            [nix_store, "--add-root", str(link), "--indirect", "--realise", pkg],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(f"WARNING: failed to pin gcroot for {name}: {result.stderr.strip()}",
+                  file=sys.stderr)
+
+
 def _detect_gst_plugin_path() -> str:
     """Return GST_PLUGIN_PATH covering all Nix-built GStreamer plugin packages.
 
@@ -65,11 +100,27 @@ def _runtime_env() -> dict:
         existing = env.get("QT_PLUGIN_PATH", "")
         env["QT_PLUGIN_PATH"] = (existing + ":" + extra_qt_plugins).strip(":")
 
-    gst_plugin_path = _detect_gst_plugin_path()
-    if gst_plugin_path:
-        existing = env.get("GST_PLUGIN_PATH", "")
-        env["GST_PLUGIN_PATH"] = (existing + ":" + gst_plugin_path).strip(":")
-        print(f"GST_PLUGIN_PATH set ({len(gst_plugin_path.split(':'))} dirs)", file=sys.stderr)
+    # Prefer the pinned closure persisted by build_openauto.py (set from
+    # shell.nix). It includes the H.264 decoder and is GC-rooted. Only fall
+    # back to scanning /nix/store when no pinned path is available.
+    if env.get("GST_PLUGIN_PATH"):
+        print(
+            f"GST_PLUGIN_PATH from runtime.env "
+            f"({len(env['GST_PLUGIN_PATH'].split(':'))} dirs)",
+            file=sys.stderr,
+        )
+    else:
+        gst_plugin_path = _detect_gst_plugin_path()
+        if gst_plugin_path:
+            env["GST_PLUGIN_PATH"] = gst_plugin_path
+            print(
+                f"GST_PLUGIN_PATH from /nix/store scan "
+                f"({len(gst_plugin_path.split(':'))} dirs)",
+                file=sys.stderr,
+            )
+
+    if env.get("GST_PLUGIN_PATH"):
+        _pin_gcroots(env["GST_PLUGIN_PATH"])
 
     env["QT_DEBUG_PLUGINS"] = "1"
 

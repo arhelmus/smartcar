@@ -165,11 +165,20 @@ def build_openauto(rebuild: bool = False) -> None:
     ] + _FINDER_OVERRIDES + _blkid_flags())
     _run(["cmake", "--build", str(OPENAUTO_BUILD), f"-j{jobs}"])
 
-    # Persist runtime env vars needed outside nix-shell.
+    # Persist runtime env vars needed outside nix-shell.  Both are set by
+    # shell.nix's shellHook; GST_PLUGIN_PATH is the pinned plugin closure
+    # (including the H.264 decoder) that run_openauto.py must reuse verbatim.
+    lines = []
     qt_path = os.environ.get("QT_QPA_PLATFORM_PLUGIN_PATH", "")
     if qt_path:
+        lines.append(f"QT_QPA_PLATFORM_PLUGIN_PATH={qt_path}")
+    gst_path = os.environ.get("GST_PLUGIN_PATH", "")
+    if gst_path:
+        lines.append(f"GST_PLUGIN_PATH={gst_path}")
+    if lines:
         runtime_env = INSTALL_PREFIX.parent / "runtime.env"
-        runtime_env.write_text(f"QT_QPA_PLATFORM_PLUGIN_PATH={qt_path}\n")
+        runtime_env.parent.mkdir(parents=True, exist_ok=True)
+        runtime_env.write_text("\n".join(lines) + "\n")
 
 
 # ── CLI entry point ────────────────────────────────────────────────────────────
