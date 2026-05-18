@@ -65,6 +65,10 @@ def main() -> int:
     if not args.laptop_ip:
         print(f"Auto-detected laptop USB-Ethernet IP: {laptop_ip}", file=sys.stderr)
 
+    # The board takes over the openauto connection — make sure a local
+    # smartcar-server (started by run_server.py) isn't holding it.
+    common.stop_local_server()
+
     rc = common.cross_build_and_deploy(args.board, args.user, args.release)
     if rc != 0:
         return rc

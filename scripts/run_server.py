@@ -11,44 +11,15 @@ foreground instead.
 
 import argparse
 import os
-import signal
 import subprocess
 import sys
-import time
 
 import common
 
 
 def _kill_previous() -> None:
     """Terminate any server instance recorded in the PID file."""
-    if not common.SERVER_PID_FILE.exists():
-        return
-    try:
-        pid = int(common.SERVER_PID_FILE.read_text().strip())
-    except ValueError:
-        common.SERVER_PID_FILE.unlink(missing_ok=True)
-        return
-
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        common.SERVER_PID_FILE.unlink(missing_ok=True)
-        return
-
-    print(f"Stopping previous server (pid {pid})…", file=sys.stderr)
-    try:
-        os.kill(pid, signal.SIGTERM)
-        for _ in range(20):  # wait up to 2 s
-            time.sleep(0.1)
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                break
-        else:
-            os.kill(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    common.SERVER_PID_FILE.unlink(missing_ok=True)
+    common.stop_local_server()
 
 
 def main() -> int:

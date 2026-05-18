@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -41,6 +43,46 @@ def _load_env_local() -> None:
             os.environ[key] = value
 
 _load_env_local()
+
+
+# ── Local server lifecycle ───────────────────────────────────────────────────
+
+def stop_local_server() -> None:
+    """Terminate the local smartcar-server started by run_server.py, if any.
+
+    Reads SERVER_PID_FILE, SIGTERMs the process (escalating to SIGKILL after
+    ~2 s), and removes the pid file.  No-op when nothing is running.  Used by
+    run_server.py before relaunching and by run_board.py so the laptop server
+    does not contend with the board for the openauto connection.
+    """
+    if not SERVER_PID_FILE.exists():
+        return
+    try:
+        pid = int(SERVER_PID_FILE.read_text().strip())
+    except ValueError:
+        SERVER_PID_FILE.unlink(missing_ok=True)
+        return
+
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        SERVER_PID_FILE.unlink(missing_ok=True)
+        return
+
+    print(f"Stopping local server (pid {pid})…", file=sys.stderr)
+    try:
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(20):  # wait up to 2 s
+            time.sleep(0.1)
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+        else:
+            os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    SERVER_PID_FILE.unlink(missing_ok=True)
 
 
 # ── Laptop USB-Ethernet IP discovery ─────────────────────────────────────────
