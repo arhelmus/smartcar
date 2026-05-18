@@ -11,6 +11,21 @@ Key roles:
 - **`apps/`** — future iOS/Android client apps (currently placeholders).
 - **`server/third_party/openauto`** — vendored `openauto` source used as a reference.
 
+## Running & testing locally
+
+**Never hand-run `cargo run` for the server, and never start the emulator by hand.** To exercise the end-to-end pipeline always use the orchestration scripts:
+
+- **`python3 scripts/run_openauto.py`** — brings up the `openauto` head-unit emulator (Docker; VNC on 5900). Start this first.
+- **`python3 scripts/run_server.py`** — builds and runs `smartcar-server` against the emulator.
+
+Log behaviour for `run_server.py`:
+
+- **Default (detached):** the build runs in the foreground, then the server runs in the background. **stdout+stderr are written to `smartcar-server.log` in the repo root** (`/Users/arhelmus/smartcar/smartcar-server.log`). Read that file to inspect logs after a run.
+- **`--attached`:** runs the server in the foreground so logs stream live in the terminal (use this when you want to watch logs in place).
+- `--log LEVEL` sets `RUST_LOG` (e.g. `--log info,aap_core=debug`); `--release` / `--debug` pick the build profile. The script kills any previous server instance via its PID file before starting.
+
+So: to verify a change, run `run_openauto.py`, then `run_server.py` (add `--attached` for live logs, or read `smartcar-server.log` afterwards). Do not claim a runtime behaviour is fixed without checking that log.
+
 ## Android Auto protocol questions
 
 For any question about the AA wire protocol, **consult `docs/protocol/` first**:
