@@ -26,10 +26,14 @@
 mod decoder;
 mod engine;
 mod ffi;
+mod producer;
 mod sink;
 mod texture;
 
+pub use engine::FlutterEngineHandle;
+pub use producer::{FlutterVideoProducer, HEIGHT, WIDTH};
 pub use sink::FlutterSink;
+pub use texture::{new_store, SharedPixelStore};
 
 /// Path to the `flutter_assets/` directory, baked in at compile time.
 ///

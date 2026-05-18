@@ -260,9 +260,15 @@ fn emit_engine_link(dir: &Path) {
 /// The Google artifact bucket is keyed on exactly this value.
 fn engine_sha(flutter_bin: Option<&Path>) -> Option<String> {
     let flutter = flutter_bin?;
-    // <sdk>/bin/flutter → <sdk>
-    let sdk = flutter.parent()?.parent()?;
-    let version_file = sdk.join("bin/internal/engine.version");
+    // Resolve symlinks first: a PATH/Homebrew `flutter` is typically a shim
+    // pointing into the real SDK (e.g. .../share/flutter/bin/flutter), so the
+    // SDK root isn't a fixed number of parents above the discovered path.
+    let real = std::fs::canonicalize(flutter).unwrap_or_else(|_| flutter.to_path_buf());
+    // The SDK root is the ancestor that contains bin/internal/engine.version.
+    let version_file = real
+        .ancestors()
+        .map(|a| a.join("bin/internal/engine.version"))
+        .find(|p| p.exists())?;
     println!("cargo:rerun-if-changed={}", version_file.display());
     let sha = std::fs::read_to_string(&version_file).ok()?;
     let sha = sha.trim().to_string();

@@ -120,6 +120,40 @@ impl FlutterProjectArgs {
 // lifetimes are managed by the caller (CString kept alive in EngineHandle).
 unsafe impl Send for FlutterProjectArgs {}
 
+// ── Window metrics ────────────────────────────────────────────────────────────
+
+/// Mirrors the leading fields of `FlutterWindowMetricsEvent`.
+///
+/// The engine guards every field past `struct_size` with a range check, so
+/// declaring only the first four (the ones we set) is sufficient: width,
+/// height and `pixel_ratio` fully define the render surface; later fields
+/// (insets, display id, …) default to zero/disabled.
+///
+/// Without one of these events the engine has a 0×0 surface and never
+/// composites a frame — the present callback is never called.
+#[repr(C)]
+pub struct FlutterWindowMetricsEvent {
+    /// Must equal `size_of::<FlutterWindowMetricsEvent>()`.
+    pub struct_size: usize,
+    /// Physical width of the render surface, in pixels.
+    pub width: usize,
+    /// Physical height of the render surface, in pixels.
+    pub height: usize,
+    /// Device pixel ratio (logical → physical). Use `1.0` for projection.
+    pub pixel_ratio: f64,
+}
+
+impl FlutterWindowMetricsEvent {
+    pub fn new(width: usize, height: usize, pixel_ratio: f64) -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>(),
+            width,
+            height,
+            pixel_ratio,
+        }
+    }
+}
+
 // ── External textures ─────────────────────────────────────────────────────────
 
 /// Optional release callback called after the engine has consumed a pixel buffer.
@@ -156,6 +190,15 @@ unsafe extern "C" {
 
     /// Shut down the engine and release all resources.
     pub fn FlutterEngineShutdown(engine: FlutterEngine) -> FlutterEngineResult;
+
+    /// Notify the engine of the render-surface size.
+    ///
+    /// Must be called once after [`FlutterEngineRun`]; the engine produces no
+    /// frames until it has non-zero window metrics.
+    pub fn FlutterEngineSendWindowMetricsEvent(
+        engine: FlutterEngine,
+        event: *const FlutterWindowMetricsEvent,
+    ) -> FlutterEngineResult;
 
     /// Register an external texture with `texture_id`.
     ///

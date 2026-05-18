@@ -97,14 +97,17 @@ async fn main() -> anyhow::Result<()> {
     // failure), fall back to the testkit producers so the connection still
     // comes up.
     let mut run_testkit = args.testkit;
+    let mut gate = Some(video_start_rx);
     if !run_testkit {
-        match start_flutter_producers(frame_tx.clone()) {
+        let rx = gate.take().expect("gate present before producer selection");
+        match start_flutter_producers(frame_tx.clone(), rx) {
             Ok(()) => {}
-            Err(e) => {
+            Err((e, rx)) => {
                 tracing::warn!(
                     error = %e,
                     "Flutter renderer unavailable — falling back to testkit producers"
                 );
+                gate = Some(rx);
                 run_testkit = true;
             }
         }
@@ -112,7 +115,7 @@ async fn main() -> anyhow::Result<()> {
     if run_testkit {
         start_testkit_producers(
             frame_tx,
-            video_start_rx,
+            gate.expect("gate returned for testkit fallback"),
             &mut media_mixer,
             &mut speech_mixer,
             &mut system_mixer,
@@ -195,21 +198,56 @@ fn start_testkit_producers(
 
 // ── Flutter producers ─────────────────────────────────────────────────────────
 
-fn start_flutter_producers(_frame_tx: aap_video::VideoFrameSender) -> anyhow::Result<()> {
-    build_flutter_engine(_frame_tx)
-}
-
+/// Start the Flutter renderer: launch the engine, point it at the AA video
+/// resolution, and spawn the encode loop that streams composited frames.
+///
+/// On failure the `VideoStartRx` is handed back so the caller can fall back to
+/// the testkit producers (which need the focus gate).  Audio is silent for now
+/// — only the video path is wired.
 #[cfg(feature = "flutter")]
-fn build_flutter_engine(_frame_tx: aap_video::VideoFrameSender) -> anyhow::Result<()> {
-    // TODO(M2): wire FlutterEngine present callback → frame_tx,
-    //           and method channel handler → audio source handles.
-    anyhow::bail!("Flutter producer not yet implemented (M2)")
+fn start_flutter_producers(
+    frame_tx: aap_video::VideoFrameSender,
+    video_start_rx: VideoStartRx,
+) -> Result<(), (anyhow::Error, VideoStartRx)> {
+    use aap_flutter::{
+        new_store, resolve_flutter_paths, FlutterEngineHandle, FlutterVideoProducer, HEIGHT, WIDTH,
+    };
+
+    // Every fallible step runs before the gate is consumed, so the rx can be
+    // returned intact for the testkit fallback.
+    let result = (|| -> anyhow::Result<(FlutterEngineHandle, FlutterVideoProducer, _)> {
+        let (assets, icu) = resolve_flutter_paths();
+        let store = new_store();
+        let engine = FlutterEngineHandle::launch(&assets, &icu, store.clone())?;
+        engine.send_window_metrics(WIDTH as u32, HEIGHT as u32, 1.0)?;
+        let producer = FlutterVideoProducer::new(30)?;
+        Ok((engine, producer, store))
+    })();
+
+    match result {
+        Ok((engine, producer, store)) => {
+            tokio::task::spawn_blocking(move || {
+                // `engine` is moved in so it lives as long as the encode loop;
+                // dropping it here shuts the Flutter engine down cleanly.
+                let _engine = engine;
+                producer.run(store, frame_tx, video_start_rx);
+            });
+            Ok(())
+        }
+        Err(e) => Err((e, video_start_rx)),
+    }
 }
 
 #[cfg(not(feature = "flutter"))]
-fn build_flutter_engine(_frame_tx: aap_video::VideoFrameSender) -> anyhow::Result<()> {
-    anyhow::bail!(
-        "--flutter requires the binary to be compiled with the `flutter` feature:\n  \
-         FLUTTER_ENGINE_LIB_DIR=/path/to/engine cargo build --features flutter"
-    )
+fn start_flutter_producers(
+    _frame_tx: aap_video::VideoFrameSender,
+    video_start_rx: VideoStartRx,
+) -> Result<(), (anyhow::Error, VideoStartRx)> {
+    Err((
+        anyhow::anyhow!(
+            "binary built without the `flutter` feature \
+             (build with --features flutter)"
+        ),
+        video_start_rx,
+    ))
 }

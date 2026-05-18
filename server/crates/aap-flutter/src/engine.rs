@@ -17,8 +17,10 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 
 use anyhow::Context as _;
 
-use crate::ffi::{self, FlutterEngine, FlutterProjectArgs, FlutterRendererConfig};
-use crate::texture::SharedPixelStore;
+use crate::ffi::{
+    self, FlutterEngine, FlutterProjectArgs, FlutterRendererConfig, FlutterWindowMetricsEvent,
+};
+use crate::texture::{PixelStore, SharedPixelStore};
 
 // ── Callback data ─────────────────────────────────────────────────────────────
 
@@ -27,8 +29,8 @@ use crate::texture::SharedPixelStore;
 /// The pointer is set by `FlutterEngineHandle::launch` immediately after
 /// `FlutterEngineRun` returns and before any external-texture signals are sent.
 pub(crate) struct EngineCallbackData {
-    /// Pixel store read by the texture frame callback (P1: wire up OpenGL texture).
-    #[allow(dead_code)]
+    /// Latest composited frame, written by [`surface_present_callback`] and
+    /// read by the encoder task.
     pub store: SharedPixelStore,
     /// Raw engine handle; null until `FlutterEngineRun` has returned.
     pub engine: AtomicPtr<c_void>,
@@ -43,19 +45,42 @@ unsafe impl Sync for EngineCallbackData {}
 /// Software renderer surface-present callback.
 ///
 /// Called on the Flutter render thread each time Flutter finishes compositing
-/// a frame.  In P0 the composited ARGB buffer is discarded.  A future step
-/// will write it to `/dev/fb0` or a KMS primary plane for actual display.
+/// a frame.  The composited buffer is the platform-native 32-bit format
+/// (`row_bytes` may exceed `width × 4` due to stride padding).  We copy it —
+/// de-padded to a tightly packed `width × height × 4` buffer — into the shared
+/// [`PixelStore`]; the encoder task reads the latest frame from there and
+/// pushes H.264 to the Android Auto video channel.
 unsafe extern "C" fn surface_present_callback(
-    _user_data: *mut c_void,
-    _allocation: *const c_void,
+    user_data: *mut c_void,
+    allocation: *const c_void,
     row_bytes: usize,
     height: usize,
 ) -> bool {
-    tracing::trace!(
-        row_bytes,
-        height,
-        "flutter: software frame composed (discarded in P0)"
-    );
+    if user_data.is_null() || allocation.is_null() || row_bytes == 0 || height == 0 {
+        return false;
+    }
+    let data = &*(user_data as *const EngineCallbackData);
+
+    let width = row_bytes / 4;
+    let src = std::slice::from_raw_parts(allocation as *const u8, row_bytes * height);
+
+    // De-pad rows: copy width*4 bytes per row, skipping the row stride.
+    let mut packed = vec![0u8; width * height * 4];
+    for row in 0..height {
+        let s = row * row_bytes;
+        let d = row * width * 4;
+        packed[d..d + width * 4].copy_from_slice(&src[s..s + width * 4]);
+    }
+
+    {
+        let mut store = data.store.write();
+        *store = PixelStore {
+            rgba: packed,
+            width: width as u32,
+            height: height as u32,
+        };
+    }
+    tracing::trace!(width, height, "flutter: composited frame captured");
     true
 }
 
@@ -159,6 +184,26 @@ impl FlutterEngineHandle {
             _icu_cstr: icu_cstr,
             _data: data,
         })
+    }
+
+    /// Tell the engine the render-surface size.
+    ///
+    /// Must be called once after [`launch`](Self::launch); until it receives
+    /// non-zero window metrics the engine keeps a 0×0 surface and never
+    /// composites a frame (the present callback is never invoked).
+    pub fn send_window_metrics(
+        &self,
+        width: u32,
+        height: u32,
+        pixel_ratio: f64,
+    ) -> anyhow::Result<()> {
+        let event = FlutterWindowMetricsEvent::new(width as usize, height as usize, pixel_ratio);
+        let rc = unsafe { ffi::FlutterEngineSendWindowMetricsEvent(self.engine.0, &event) };
+        if rc != ffi::kSuccess {
+            anyhow::bail!("FlutterEngineSendWindowMetricsEvent failed (code {rc})");
+        }
+        tracing::info!(width, height, "Flutter window metrics sent");
+        Ok(())
     }
 
     /// Signal to the engine that a new frame is ready for texture id `0`.
