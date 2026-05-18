@@ -15,10 +15,12 @@
 
 #![warn(missing_docs)]
 
+pub mod channel;
 mod config;
 mod service;
 mod sink;
 
+pub use channel::{video_frame_channel, VideoFrameReceiver, VideoFrameSender};
 pub use config::VideoConfig;
 pub use service::VideoService;
 pub use sink::{FrameSink, NullSink};

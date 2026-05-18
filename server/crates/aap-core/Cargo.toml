@@ -9,10 +9,10 @@ rust-version.workspace = true
 aap-contracts = { workspace = true }
 aap-proto     = { workspace = true }
 aap-transport = { workspace = true }
+aap-video     = { path = "../aap-video" }
 async-trait   = { workspace = true }
 bytes         = { workspace = true }
 prost         = { workspace = true }
 thiserror     = { workspace = true }
 tokio         = { workspace = true }
 tracing       = { workspace = true }
-openh264      = "0.8.1"
