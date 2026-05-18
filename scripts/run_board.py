@@ -57,6 +57,12 @@ def main() -> int:
     parser.set_defaults(release=True)
     args = parser.parse_args()
 
+    # Bring up the laptop side of the USB-Ethernet link before anything else,
+    # so the board is reachable and IP auto-detection below succeeds.
+    rc = common.assign_board_ip()
+    if rc != 0:
+        return rc
+
     laptop_ip = args.laptop_ip or common.laptop_usb_ip()
     if not laptop_ip:
         print("ERROR: could not determine laptop USB-Ethernet IP.", file=sys.stderr)

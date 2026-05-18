@@ -138,6 +138,81 @@ def laptop_usb_ip() -> str:
     return ""
 
 
+# ── Board USB-Ethernet IP assignment ─────────────────────────────────────────
+
+# Fallback only — the real values come from .env.local
+# (LAPTOP_USB_IP / LAPTOP_USB_MASK), loaded by _load_env_local() above.
+LAPTOP_USB_IP_DEFAULT   = "10.55.0.2"
+LAPTOP_USB_MASK_DEFAULT = "24"
+
+
+def _find_iface_by_mac(mac: str) -> str | None:
+    """Return the interface name whose ether address matches *mac*."""
+    mac = mac.lower()
+    try:
+        out = subprocess.check_output(["ifconfig"], text=True, stderr=subprocess.DEVNULL)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+    current_iface = ""
+    for line in out.splitlines():
+        if not line[:1].isspace():
+            current_iface = line.split(":")[0]
+        elif re.search(rf"\bether\s+{re.escape(mac)}\b", line.strip()):
+            return current_iface
+    return None
+
+
+def assign_board_ip(
+    ip: str | None = None,
+    mask: str | None = None,
+    check: bool = False,
+) -> int:
+    """Assign the laptop's USB-Ethernet IP so the board is reachable.
+
+    Finds the interface whose MAC matches LAPTOP_USB_MAC and assigns the IP/mask
+    via `sudo ifconfig` (idempotent — a no-op when already assigned).  With
+    *check* only reports the current state.  Returns 0 on success / nothing to
+    do, non-zero on error.
+
+    IP/mask resolution (mirrors laptop_usb_ip()): explicit argument →
+    .env.local (LAPTOP_USB_IP / LAPTOP_USB_MASK) → built-in default.
+    """
+    ip = ip or os.environ.get("LAPTOP_USB_IP", "").strip() or LAPTOP_USB_IP_DEFAULT
+    mask = mask or os.environ.get("LAPTOP_USB_MASK", "").strip() or LAPTOP_USB_MASK_DEFAULT
+    mac = (os.environ.get("LAPTOP_USB_MAC") or "").strip()
+    if not mac:
+        print("ERROR: LAPTOP_USB_MAC not set — add it to .env.local.", file=sys.stderr)
+        return 1
+
+    iface = _find_iface_by_mac(mac)
+    if not iface:
+        print(f"ERROR: no interface found with MAC {mac}.", file=sys.stderr)
+        print("       Is the USB cable plugged in and the board powered on?", file=sys.stderr)
+        return 1
+
+    print(f"Found interface: {iface} (MAC {mac})", file=sys.stderr)
+
+    out = subprocess.check_output(["ifconfig", iface], text=True)
+    m = re.search(r"\binet\s+(\d+\.\d+\.\d+\.\d+)\b", out)
+    current_ip = m.group(1) if m else None
+
+    if check:
+        print(f"Current IP: {current_ip}" if current_ip else "No IP assigned.", file=sys.stderr)
+        return 0
+
+    if current_ip == ip:
+        print(f"Already assigned {ip} — nothing to do.", file=sys.stderr)
+        return 0
+
+    print(f"Assigning {ip}/{mask} to {iface} …", file=sys.stderr)
+    result = subprocess.run(["sudo", "ifconfig", iface, f"{ip}/{mask}"])
+    if result.returncode != 0:
+        print("ERROR: ifconfig failed.", file=sys.stderr)
+        return result.returncode
+    return 0
+
+
 # ── Board config (populated from .env.local / environment) ───────────────────
 
 CROSS_TARGET = "aarch64-unknown-linux-gnu"

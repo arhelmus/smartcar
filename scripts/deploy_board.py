@@ -38,6 +38,11 @@ def main() -> int:
     parser.set_defaults(release=True)
     args = parser.parse_args()
 
+    # Bring up the laptop side of the USB-Ethernet link so the board is reachable.
+    rc = common.assign_board_ip()
+    if rc != 0:
+        return rc
+
     rc = common.cross_build_and_deploy(args.board, args.user, args.release)
     if rc == 0:
         print(f"\nDeployed. Run with:  python3 scripts/run_board.py", file=sys.stderr)
