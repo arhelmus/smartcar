@@ -277,7 +277,7 @@ mod tests {
             let mut mixer = MixerSink::new(mono_16k());
             let handle = mixer.add_source();
 
-            handle.push(make_chunk(&vec![100i16; 80], 0));
+            handle.push(make_chunk(&[100i16; 80], 0));
 
             let chunk = mixer.next_chunk(10).unwrap();
             let decoded = decode_chunk(&chunk);
@@ -310,8 +310,7 @@ mod tests {
         impl AudioStream for ConstStream {
             fn next_chunk(&mut self, duration_ms: u32) -> Option<PcmChunk> {
                 let n = self.1.frames_per_chunk(duration_ms);
-                let bytes: Vec<u8> = std::iter::repeat(self.0)
-                    .take(n)
+                let bytes: Vec<u8> = std::iter::repeat_n(self.0, n)
                     .flat_map(|s| s.to_le_bytes())
                     .collect();
                 Some(PcmChunk {

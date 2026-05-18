@@ -92,6 +92,18 @@ def _check_cross() -> None:
     _run(["rustup", "toolchain", "add", HOST_TOOLCHAIN, "--force-non-host", "--profile", "minimal"])
 
 
+def _check_cargo_audit() -> None:
+    print("Checking cargo-audit …", file=sys.stderr)
+    if shutil.which("cargo-audit"):
+        print("  cargo-audit OK.", file=sys.stderr)
+        return
+    if not shutil.which("cargo"):
+        print("  WARNING: cargo not found — skipping cargo-audit install.", file=sys.stderr)
+        return
+    print("  cargo-audit not found — installing …", file=sys.stderr)
+    _run(["cargo", "install", "cargo-audit"])
+
+
 def _check_certs() -> None:
     print("Checking TLS certificates …", file=sys.stderr)
     key = CERTS_DIR / "server.key"
@@ -151,6 +163,7 @@ def main() -> int:
     _check_submodules()
     _patch_openauto()
     _check_cargo()
+    _check_cargo_audit()
     _check_cross()
     _check_certs()
     _setup_git_hooks()
