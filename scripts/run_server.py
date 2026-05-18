@@ -40,14 +40,20 @@ def main() -> int:
         "--attached", action="store_true",
         help="Run in the foreground instead of detaching.",
     )
+    parser.add_argument(
+        "--testkit", action="store_true",
+        help="Use the synthetic testkit producers (drops the flutter feature "
+             "and passes --testkit to the binary). Default builds with Flutter.",
+    )
     args = parser.parse_args()
+    flutter = not args.testkit
 
     env = {**os.environ, "RUST_LOG": args.log}
 
     _kill_previous()
 
     if args.attached:
-        cmd = common.cargo_run_cmd(release=args.release, target=args.target)
+        cmd = common.cargo_run_cmd(release=args.release, target=args.target, flutter=flutter)
         print(f"Starting smartcar-server (attached): {' '.join(cmd)}", file=sys.stderr)
         try:
             subprocess.run(cmd, check=True, env=env, cwd=str(common.REPO_ROOT))
@@ -60,7 +66,7 @@ def main() -> int:
 
     # --- detached mode ---
     # Build in the foreground so the user sees compile progress and errors.
-    build_cmd = common.cargo_build_cmd(release=args.release)
+    build_cmd = common.cargo_build_cmd(release=args.release, flutter=flutter)
     print(f"Building smartcar-server: {' '.join(build_cmd)}", file=sys.stderr)
     result = subprocess.run(build_cmd, cwd=str(common.REPO_ROOT))
     if result.returncode != 0:
@@ -69,6 +75,8 @@ def main() -> int:
 
     binary = common.server_binary_path(release=args.release)
     run_cmd = [str(binary), "--target", args.target]
+    if args.testkit:
+        run_cmd.append("--testkit")
     print(f"Starting smartcar-server (detached): {' '.join(run_cmd)}", file=sys.stderr)
     print(f"Logs: {common.SERVER_LOG_FILE}", file=sys.stderr)
 

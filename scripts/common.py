@@ -227,12 +227,14 @@ BOARD_LOG_FILE      = "/tmp/smartcar-server.log"
 
 # ── Build helpers ─────────────────────────────────────────────────────────────
 
-def cargo_build_cmd(release: bool) -> list[str]:
+def cargo_build_cmd(release: bool, flutter: bool = True) -> list[str]:
     cmd = [
         "cargo", "build",
         "--manifest-path", str(MANIFEST),
         "--bin", "smartcar-server",
     ]
+    if flutter:
+        cmd += ["--features", "flutter"]
     if release:
         cmd.append("--release")
     return cmd
@@ -243,13 +245,14 @@ def server_binary_path(release: bool) -> Path:
     return REPO_ROOT / "server" / "target" / profile / "smartcar-server"
 
 
-def cargo_cross_build_cmd(release: bool) -> list[str]:
+def cargo_cross_build_cmd(release: bool, flutter: bool = True) -> list[str]:
     # Vendor OpenSSL statically: the cross toolchain links libssl 1.1 but the
     # board (Debian 13) ships only libssl.so.3, so a dynamic link never
     # resolves. Static vendoring makes the ARM binary self-contained.
+    features = "openssl-vendored,flutter" if flutter else "openssl-vendored"
     cmd = [
         "cross", "build", "--target", CROSS_TARGET,
-        "--bin", "smartcar-server", "--features", "openssl-vendored",
+        "--bin", "smartcar-server", "--features", features,
     ]
     if release:
         cmd.append("--release")
@@ -298,16 +301,45 @@ def cross_build_and_deploy(board: str, user: str, release: bool) -> int:
         print(f"ERROR: rsync failed (exit {result.returncode}).", file=sys.stderr)
         return result.returncode
 
+    # Flutter runtime: the build script stages libflutter_engine.so,
+    # flutter_assets/ and icudtl.dat next to the binary. Ship them alongside
+    # the executable on the board — the binary's $ORIGIN rpath resolves the
+    # engine .so, and resolve_flutter_paths() finds the bundle next to itself.
+    # Absent (testkit build) → skipped; the server falls back at runtime.
+    board_dir = BOARD_SERVER_BINARY.rsplit("/", 1)[0] + "/"
+    staged = binary.parent
+    for name in ("libflutter_engine.so", "icudtl.dat", "flutter_assets"):
+        src = staged / name
+        if not src.exists():
+            print(f"NOTE: {name} not staged — skipping (testkit build?).", file=sys.stderr)
+            continue
+        print(f"Deploying {name} → {user}@{board}:{board_dir}{name} …", file=sys.stderr)
+        if src.is_dir():
+            subprocess.run(["ssh", f"{user}@{board}", "mkdir", "-p", f"{board_dir}{name}"])
+            # Trailing slash: copy contents into board_dir/<name>/.
+            rsync = ["rsync", "-az", "--delete", f"{src}/",
+                     f"{user}@{board}:{board_dir}{name}/"]
+        else:
+            rsync = ["rsync", "-az", str(src), f"{user}@{board}:{board_dir}{name}"]
+        result = subprocess.run(rsync)
+        if result.returncode != 0:
+            print(f"ERROR: rsync of {name} failed (exit {result.returncode}).", file=sys.stderr)
+            return result.returncode
+
     return 0
 
 
-def cargo_run_cmd(release: bool, target: str) -> list[str]:
+def cargo_run_cmd(release: bool, target: str, flutter: bool = True) -> list[str]:
     cmd = [
         "cargo", "run",
         "--manifest-path", str(MANIFEST),
         "--bin", "smartcar-server",
     ]
+    if flutter:
+        cmd += ["--features", "flutter"]
     if release:
         cmd.append("--release")
     cmd += ["--", "--target", target]
+    if not flutter:
+        cmd.append("--testkit")
     return cmd

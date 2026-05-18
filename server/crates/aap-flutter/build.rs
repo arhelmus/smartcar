@@ -248,12 +248,37 @@ fn resolve_engine_lib(flutter_bin: Option<&Path>) {
 }
 
 /// Emit link-search + link-lib for the directory holding libflutter_engine.so,
-/// and bake an rpath so a locally-run binary finds the lib without
-/// `LD_LIBRARY_PATH` (deployed builds get `$ORIGIN` via the deploy script).
+/// bake two rpaths, and stage the lib next to the binary.
+///
+/// rpath `$ORIGIN` lets a deployed binary find the lib shipped alongside it
+/// (the deploy script rsyncs it next to the executable); the absolute cache
+/// path lets a locally-run `cargo run` binary find it with no `LD_LIBRARY_PATH`.
 fn emit_engine_link(dir: &Path) {
     println!("cargo:rustc-link-search=native={}", dir.display());
     println!("cargo:rustc-link-lib=dylib=flutter_engine");
+    println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
     println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
+    copy_engine_to_target(dir);
+}
+
+/// Copy `libflutter_engine.so` into `target/<profile>/` so it sits next to the
+/// compiled binary (resolved at runtime via the `$ORIGIN` rpath, and picked up
+/// by the board deploy step).
+fn copy_engine_to_target(engine_dir: &Path) {
+    let Ok(out_dir) = std::env::var("OUT_DIR") else {
+        return;
+    };
+    let out_dir = PathBuf::from(out_dir);
+    // target/<profile>/build/<crate>/out  →  target/<profile>/
+    let Some(target_dir) = out_dir.ancestors().nth(3) else {
+        return;
+    };
+    let src = engine_dir.join("libflutter_engine.so");
+    if src.exists() {
+        if let Err(e) = std::fs::copy(&src, target_dir.join("libflutter_engine.so")) {
+            println!("cargo:warning=Failed to copy libflutter_engine.so to target: {e}");
+        }
+    }
 }
 
 /// The engine commit SHA, read verbatim from `<sdk>/bin/internal/engine.version`.
