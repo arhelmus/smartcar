@@ -9,33 +9,41 @@
 
 ## USB modes
 
-The board has a single UDC (USB Device Controller). It can run in one of two modes, selected at boot by a hardware jumper on the 26-pin header:
+The board has a single UDC (USB Device Controller). It can run in one of two modes, selected at boot by a hardware jumper on the 40-pin header:
 
-| Header pins | PA6 reads | Mode |
+| Header pins | PI16 reads | Mode |
 |---|---|---|
 | **No jumper** (default) | HIGH (internal pull-up) | **Dev mode** — USB Ethernet (`g_ether`), SSH at `10.55.0.1` |
-| **Jumper: pin 7 → pin 6** | LOW | **Car mode** — AOAP gadget, `smartcar-server --transport usb` auto-starts |
+| **Jumper: pin 37 → pin 39** | LOW | **Car mode** — AOAP gadget, `smartcar-server --transport usb` auto-starts |
+
+The strap pin is **`PI16`** — physical **pin 37** on the 40-pin header. It is
+`gpiochip1` (`300b000.pinctrl`) **line 272** = SoC bank I, pin 16; pin 39 next
+to it is `GND`. (History: the script first said `PA6` — not bonded to this
+header at all — then `PI13`/pin 7; the pin-7 joint on the hand-soldered header
+was unreliable, so the strap was moved to pin 37/`PI16`. See `git log`.)
 
 ## Mode select wiring
 
 ```
-26-pin header (top view, pin 1 at corner nearest USB-C):
+40-pin header (top view, pin 1 at corner nearest USB-C / micro-SD;
+the odd column contains pin 1):
 
- 1  2
- 3  4
- 5  4
-[6] GND      ← connect jumper here
-[7] PA6      ← to here for car mode
- 8  9
-10 11
-...
+  odd           even
+  1 [3.3V]    [5V  ] 2
+  ...
+ 35 [PI2 ]    [PC12] 36
+ 37 [PI16]    [PI4 ] 38   ← PI16 strap  (pin 37)
+ 39 [GND ]    [PI3 ] 40   ← GND         (pin 39)
 ```
 
-Short pins 6 and 7 together with a jumper cap or a wire to select car mode. Remove it to return to dev/Ethernet mode.
+Pins 37 and 39 are both in the **odd column**, one position apart (…35, 37,
+39), so a standard 0.1" jumper cap will not bridge them — use a short jumper
+**wire** from pin 37 (`PI16`) to pin 39 (`GND`) to select car mode. Remove it
+to return to dev/Ethernet mode.
 
 ## How it works at boot
 
-1. **`usb-mode.service`** runs early. It reads PA6 (`gpiochip1`, line 6) with an internal pull-up via `gpioget`. If the pin is LOW, it creates `/run/usb-car-mode`.
+1. **`usb-mode.service`** runs early. It reads PI16 (`gpiochip1`, line 272) with an internal pull-up via `gpioget`. If the pin is LOW, it creates `/run/usb-car-mode`.
 
 2. **Dev mode** (file absent): `g_ether` stays loaded. `usb0` comes up at `10.55.0.1/24`. SSH works over the USB cable from the laptop.
 
