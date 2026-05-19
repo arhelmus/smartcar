@@ -228,17 +228,17 @@ fn resolve_engine_lib(flutter_bin: Option<&Path>) {
         return;
     };
 
-    let Some((url, member)) = engine_artifact_url(&sha) else {
+    let Some((url, kind)) = engine_artifact_url(&sha) else {
         println!(
             "cargo:warning=No prebuilt Flutter engine mapping for this target \
-             (engine auto-download supports Linux x64/arm64). Set \
+             (engine auto-download supports Linux x64/arm64 and macOS). Set \
              FLUTTER_ENGINE_LIB_DIR (or FLUTTER_ENGINE_URL) to build \
              --features flutter for this target."
         );
         return;
     };
 
-    match ensure_engine_downloaded(&sha, &url, member) {
+    match ensure_engine_downloaded(&sha, &url, kind) {
         Ok(dir) => emit_engine_link(&dir),
         Err(e) => println!(
             "cargo:warning=Flutter engine download failed ({e}). Set \
@@ -247,18 +247,48 @@ fn resolve_engine_lib(flutter_bin: Option<&Path>) {
     }
 }
 
-/// Emit link-search + link-lib for the directory holding libflutter_engine.so,
-/// bake two rpaths, and stage the lib next to the binary.
+/// Shape of the prebuilt engine artifact for the build target.
+#[derive(Clone, Copy, PartialEq)]
+enum ArtifactKind {
+    /// Linux: a bare `libflutter_engine.so` inside the embedder zip.
+    SharedLib,
+    /// macOS: a universal `FlutterEmbedder.framework` (zip root = framework
+    /// contents).  Linked with `-framework`, not `-l`.
+    Framework,
+}
+
+fn target_is_macos() -> bool {
+    std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")
+}
+
+/// Emit link-search + link-lib for the directory holding the engine, and bake
+/// the rpath(s) so the binary finds it at runtime.
 ///
-/// rpath `$ORIGIN` lets a deployed binary find the lib shipped alongside it
-/// (the deploy script rsyncs it next to the executable); the absolute cache
-/// path lets a locally-run `cargo run` binary find it with no `LD_LIBRARY_PATH`.
+/// * **Linux** — `dylib=flutter_engine`; rpath `$ORIGIN` (deployed binary
+///   finds the `.so` rsynced alongside it) plus the absolute cache path
+///   (local `cargo run` works with no `LD_LIBRARY_PATH`); the `.so` is also
+///   staged next to the binary for the board deploy step.
+/// * **macOS** — `framework=FlutterEmbedder`; rpath = the cache dir, which is
+///   what dyld needs to resolve the framework's
+///   `@rpath/FlutterEmbedder.framework/...` install name (dev host only, no
+///   deploy).
+///
+/// `link-search`/`link-lib` propagate to the binary's final link, but
+/// `rustc-link-arg` (the rpath) does **not** — a library build script can't
+/// set the binary's rpath.  So the resolved dir is published as `cargo:`
+/// metadata (`DEP_FLUTTER_ENGINE_ENGINEDIR`) and smartcar-server's build
+/// script emits the actual rpath.
 fn emit_engine_link(dir: &Path) {
-    println!("cargo:rustc-link-search=native={}", dir.display());
-    println!("cargo:rustc-link-lib=dylib=flutter_engine");
-    println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
-    copy_engine_to_target(dir);
+    if target_is_macos() {
+        println!("cargo:rustc-link-search=framework={}", dir.display());
+        println!("cargo:rustc-link-lib=framework=FlutterEmbedder");
+    } else {
+        println!("cargo:rustc-link-search=native={}", dir.display());
+        println!("cargo:rustc-link-lib=dylib=flutter_engine");
+        copy_engine_to_target(dir);
+    }
+    // Consumed by smartcar-server/build.rs to set the binary rpath.
+    println!("cargo:enginedir={}", dir.display());
 }
 
 /// Copy `libflutter_engine.so` into `target/<profile>/` so it sits next to the
@@ -304,40 +334,54 @@ fn engine_sha(flutter_bin: Option<&Path>) -> Option<String> {
     }
 }
 
-/// Map the build target to a `(zip_url, member_to_extract)` pair.
+/// Map the build target to a `(zip_url, kind)` pair.
 ///
-/// `FLUTTER_ENGINE_URL` overrides the URL (the archive must still contain
-/// `libflutter_engine.so`).  Only Linux x64/arm64 are auto-resolved; macOS
-/// uses the framework and must go through `FLUTTER_ENGINE_LIB_DIR`.
-fn engine_artifact_url(sha: &str) -> Option<(String, &'static str)> {
-    const MEMBER: &str = "libflutter_engine.so";
+/// `FLUTTER_ENGINE_URL` overrides the URL (treated as a Linux `.so` archive).
+/// Linux x64/arm64 pull the embedder `.so`; macOS pulls the universal
+/// `FlutterEmbedder.framework` (one artifact covers Intel + Apple Silicon).
+fn engine_artifact_url(sha: &str) -> Option<(String, ArtifactKind)> {
     if let Ok(url) = std::env::var("FLUTTER_ENGINE_URL") {
         if !url.is_empty() {
-            return Some((url, MEMBER));
+            return Some((url, ArtifactKind::SharedLib));
         }
     }
+    let base = std::env::var("FLUTTER_STORAGE_BASE_URL")
+        .unwrap_or_else(|_| "https://storage.googleapis.com".to_string());
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+
+    // macOS: the darwin-x64 embedder framework is a universal binary
+    // (x86_64 + arm64); there is no separate darwin-arm64 artifact.
+    if os == "macos" {
+        let url = format!(
+            "{base}/flutter_infra_release/flutter/{sha}/\
+             darwin-x64/FlutterEmbedder.framework.zip"
+        );
+        return Some((url, ArtifactKind::Framework));
+    }
+
     let platform = match (os.as_str(), arch.as_str()) {
         ("linux", "x86_64") => "linux-x64",
         ("linux", "aarch64") => "linux-arm64",
         _ => return None,
     };
-    let base = std::env::var("FLUTTER_STORAGE_BASE_URL")
-        .unwrap_or_else(|_| "https://storage.googleapis.com".to_string());
     let url =
         format!("{base}/flutter_infra_release/flutter/{sha}/{platform}/{platform}-embedder.zip");
-    Some((url, MEMBER))
+    Some((url, ArtifactKind::SharedLib))
 }
 
 /// Download + unpack the engine into a SHA-stamped cache dir; return that dir.
 ///
 /// Cached at `<target>/flutter-engine/<sha>/`: survives `cargo clean -p` and is
 /// re-used across profiles, so the download is one-time per engine bump.
-fn ensure_engine_downloaded(sha: &str, url: &str, member: &str) -> Result<PathBuf, String> {
+fn ensure_engine_downloaded(sha: &str, url: &str, kind: ArtifactKind) -> Result<PathBuf, String> {
     let cache_dir = engine_cache_dir(sha)?;
-    let lib_path = cache_dir.join(member);
-    if lib_path.exists() {
+    // Sentinel proving the cache is already populated.
+    let sentinel = match kind {
+        ArtifactKind::SharedLib => cache_dir.join("libflutter_engine.so"),
+        ArtifactKind::Framework => cache_dir.join("FlutterEmbedder.framework/FlutterEmbedder"),
+    };
+    if sentinel.exists() {
         return Ok(cache_dir);
     }
     std::fs::create_dir_all(&cache_dir).map_err(|e| format!("mkdir {cache_dir:?}: {e}"))?;
@@ -353,21 +397,36 @@ fn ensure_engine_downloaded(sha: &str, url: &str, member: &str) -> Result<PathBu
         url,
     ]))?;
 
-    // -j: flatten paths so `member` lands directly in cache_dir.
-    run(std::process::Command::new("unzip").args([
-        "-o",
-        "-j",
-        &zip_path.to_string_lossy(),
-        member,
-        "-d",
-        &cache_dir.to_string_lossy(),
-    ]))?;
+    match kind {
+        ArtifactKind::SharedLib => {
+            // -j: flatten paths so the .so lands directly in cache_dir.
+            run(std::process::Command::new("unzip").args([
+                "-o",
+                "-j",
+                &zip_path.to_string_lossy(),
+                "libflutter_engine.so",
+                "-d",
+                &cache_dir.to_string_lossy(),
+            ]))?;
+        }
+        ArtifactKind::Framework => {
+            // The zip root *is* the framework's contents, so extract into a
+            // directory named FlutterEmbedder.framework (preserving symlinks).
+            let fw = cache_dir.join("FlutterEmbedder.framework");
+            run(std::process::Command::new("unzip").args([
+                "-o",
+                &zip_path.to_string_lossy(),
+                "-d",
+                &fw.to_string_lossy(),
+            ]))?;
+        }
+    }
     let _ = std::fs::remove_file(&zip_path);
 
-    if lib_path.exists() {
+    if sentinel.exists() {
         Ok(cache_dir)
     } else {
-        Err(format!("{member} not found in archive {url}"))
+        Err(format!("engine binary not found after unpacking {url}"))
     }
 }
 
