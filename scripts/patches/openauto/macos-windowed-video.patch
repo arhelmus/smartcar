@@ -1,11 +1,54 @@
 diff --git a/src/autoapp/Projection/QtVideoOutput.cpp b/src/autoapp/Projection/QtVideoOutput.cpp
-index 7be4dfe..9609bdd 100644
+index 7be4dfe..a37accd 100644
 --- a/src/autoapp/Projection/QtVideoOutput.cpp
 +++ b/src/autoapp/Projection/QtVideoOutput.cpp
-@@ -105,21 +105,9 @@ void QtVideoOutput::onStartPlayback()
+@@ -19,6 +19,7 @@
+ #include <QApplication>
+ #include <QGuiApplication>
+ #include <QScreen>
++#include <QSize>
+ #include <mutex>
+ #include <f1x/openauto/autoapp/Projection/QtVideoOutput.hpp>
+ #include <f1x/openauto/Common/Log.hpp>
+@@ -32,6 +33,23 @@ namespace autoapp
+ namespace projection
+ {
+ 
++namespace
++{
++// The projected stream is exactly this resolution; the window must match it
++// so Qt does 1:1 pixel mapping (no stretch, no resample blur) and so the
++// InputDevice's screen→video touch scaling stays consistent.
++QSize resolutionToSize(aap_protobuf::service::media::sink::message::VideoCodecResolutionType res)
++{
++    using Res = aap_protobuf::service::media::sink::message::VideoCodecResolutionType;
++    switch(res)
++    {
++    case Res::VIDEO_1280x720:  return QSize(1280, 720);
++    case Res::VIDEO_1920x1080: return QSize(1920, 1080);
++    default:                   return QSize(800, 480);
++    }
++}
++}
++
+ QtVideoOutput::QtVideoOutput(configuration::IConfiguration::Pointer configuration)
+     : VideoOutput(std::move(configuration))
+     , playerReady_(false)
+@@ -102,24 +120,24 @@ void QtVideoOutput::onStartPlayback()
+ {
+     OPENAUTO_LOG(info) << "[QtVideoOutput] onStartPlayback()";
+     
++    // Size the window to the negotiated stream resolution. Anything else
++    // makes Qt rescale the frames (wrong aspect / blur) and desyncs the
++    // InputDevice touch mapping, which scales pointer coords by the ratio of
++    // the screen geometry to this video geometry.
++    const QSize videoSize = resolutionToSize(getVideoResolution());
++    OPENAUTO_LOG(info) << "[QtVideoOutput] Sizing window to negotiated resolution "
++                       << videoSize.width() << "x" << videoSize.height();
++
      videoWidget_->setAttribute(Qt::WA_OpaquePaintEvent, true);
      videoWidget_->setAttribute(Qt::WA_NoSystemBackground, true);
-     videoWidget_->setAspectRatioMode(Qt::IgnoreAspectRatio);
+-    videoWidget_->setAspectRatioMode(Qt::IgnoreAspectRatio);
 -    videoWidget_->setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
 -    
 -    // Get the physical screen geometry and set widget to exactly match it
@@ -21,9 +64,38 @@ index 7be4dfe..9609bdd 100644
 -        videoWidget_->setFullScreen(true);
 -        OPENAUTO_LOG(warning) << "[QtVideoOutput] Could not detect screen, using setFullScreen()";
 -    }
++    // KeepAspectRatio: if the window manager can't honour the fixed size the
++    // frame letterboxes instead of distorting.
++    videoWidget_->setAspectRatioMode(Qt::KeepAspectRatio);
 +    videoWidget_->setWindowFlags(Qt::Window);
 +    videoWidget_->setWindowTitle("Android Auto");
-+    videoWidget_->resize(1280, 960);
++    // Fixed: the projected resolution is constant for the session, so the
++    // window must not drift from it.
++    videoWidget_->setFixedSize(videoSize);
      
      videoWidget_->raise();
      videoWidget_->show();
+diff --git a/src/autoapp/Service/ServiceFactory.cpp b/src/autoapp/Service/ServiceFactory.cpp
+index 6c04ab2..f2b19e3 100644
+--- a/src/autoapp/Service/ServiceFactory.cpp
++++ b/src/autoapp/Service/ServiceFactory.cpp
+@@ -111,11 +111,16 @@ namespace f1x::openauto::autoapp::service {
+         break;
+     }
+ 
+-    QScreen *screen = QGuiApplication::primaryScreen();
+-    QRect screenGeometry = screen == nullptr ? QRect(0, 0, 1, 1) : screen->geometry();
++    // The projection window (QtVideoOutput) is sized to exactly
++    // `videoGeometry`, and QMouseEvent positions are window-relative. So the
++    // touchscreen geometry must also be `videoGeometry` — using the host
++    // screen geometry here would rescale every touch by screen/video (and
++    // break entirely under macOS Retina point/pixel scaling).
++    QRect touchscreenGeometry = videoGeometry;
+     projection::IInputDevice::Pointer inputDevice(
+         std::make_shared<projection::InputDevice>(*QApplication::instance(), configuration_,
+-                                                  std::move(screenGeometry), std::move(videoGeometry)));
++                                                  std::move(touchscreenGeometry),
++                                                  std::move(videoGeometry)));
+ 
+     return std::make_shared<inputsource::InputSourceService>(ioService_, messenger, std::move(inputDevice));
+   }
