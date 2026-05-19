@@ -166,10 +166,28 @@ def _patch_openauto() -> None:
     print("  Patches committed locally.", file=sys.stderr)
 
 
+def _quiet_openauto_pointer() -> None:
+    """Stop git/IDE flagging the openauto submodule pointer as a change.
+
+    `_patch_openauto` commits the macOS patches *inside* the submodule, which
+    necessarily moves its HEAD away from the commit the parent repo records.
+    That divergence is intentional and must never be committed to the parent,
+    so tell git to ignore this submodule's state entirely (local config only —
+    not shared via .gitmodules). Idempotent.
+    """
+    print("Quieting openauto submodule pointer …", file=sys.stderr)
+    _run([
+        "git", "-C", str(REPO_ROOT), "config",
+        'submodule.server/third_party/openauto.ignore', "all",
+    ])
+    print("  submodule.server/third_party/openauto.ignore = all", file=sys.stderr)
+
+
 def main() -> int:
     _check_nix()
     _check_submodules()
     _patch_openauto()
+    _quiet_openauto_pointer()
     _check_cargo()
     _check_cargo_audit()
     _check_cross()
