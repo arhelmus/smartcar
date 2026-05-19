@@ -27,14 +27,6 @@ use aap_video::{VideoCfg, VideoFrameSender, VideoStartRx};
 use crate::engine::FlutterEngineHandle;
 use crate::texture::SharedPixelStore;
 
-/// Frame-rate ceiling for the software path.
-///
-/// Flutter's software rasteriser plus a CPU openh264 encode cannot sustain
-/// 30 fps at projection resolutions on a typical host (the encode overran the
-/// 33 ms budget nearly every frame).  Capping the cadence keeps the pipeline
-/// real-time — fewer, on-time frames beat a perpetually backlogged 30 fps.
-const SOFTWARE_FPS_CAP: u32 = 20;
-
 /// Flutter software buffer is the platform-native 32-bit format.  On
 /// little-endian hosts Skia's N32 is byte order **B, G, R, A**.  Flip this if
 /// red/blue look swapped when verifying against openauto.
@@ -75,7 +67,10 @@ impl FlutterVideoProducer {
             return;
         }
 
-        let fps = cfg.fps_hz().clamp(1, SOFTWARE_FPS_CAP);
+        // Run at the negotiated rate. If the host can't sustain it the
+        // deadline loop below drops the backlog rather than falling behind
+        // forever; smarter throttling is a later concern.
+        let fps = cfg.fps_hz();
         let mut encoder = match build_encoder(fps) {
             Ok(e) => e,
             Err(e) => {
