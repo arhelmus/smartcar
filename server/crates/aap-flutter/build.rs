@@ -274,10 +274,11 @@ fn target_is_macos() -> bool {
 ///   deploy).
 ///
 /// `link-search`/`link-lib` propagate to the binary's final link, but
-/// `rustc-link-arg` (the rpath) does **not** — a library build script can't
-/// set the binary's rpath.  So the resolved dir is published as `cargo:`
-/// metadata (`DEP_FLUTTER_ENGINE_ENGINEDIR`) and smartcar-server's build
-/// script emits the actual rpath.
+/// `rustc-link-arg` does **not** reach *dependents* — so the resolved dir is
+/// also published as `cargo:` metadata (`DEP_FLUTTER_ENGINE_ENGINEDIR`) and
+/// smartcar-server's build script emits the rpath for the binary.  The
+/// `rustc-link-arg` rpath here still applies to *this* crate's own test/bench
+/// executables (which link the engine and would otherwise fail dyld at start).
 fn emit_engine_link(dir: &Path) {
     if target_is_macos() {
         println!("cargo:rustc-link-search=framework={}", dir.display());
@@ -287,6 +288,8 @@ fn emit_engine_link(dir: &Path) {
         println!("cargo:rustc-link-lib=dylib=flutter_engine");
         copy_engine_to_target(dir);
     }
+    // For aap-flutter's own test/bench binaries (not propagated to dependents).
+    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
     // Consumed by smartcar-server/build.rs to set the binary rpath.
     println!("cargo:enginedir={}", dir.display());
 }
