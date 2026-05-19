@@ -329,10 +329,7 @@ mod tests {
     #[test]
     fn unconvertible_layout_errors() {
         let err = adapt_channels(vec![0; 12], 3, 2).unwrap_err();
-        assert!(matches!(
-            err,
-            FormatError::ChannelCount { got: 3, want: 2 }
-        ));
+        assert!(matches!(err, FormatError::ChannelCount { got: 3, want: 2 }));
     }
 
     // ── Normalizer boundary ───────────────────────────────────────────────────
@@ -398,8 +395,7 @@ mod tests {
         }
         // MediaFmt is 48k stereo; ResampleStream<MediaFmt, MediaFmt> is a
         // rate-identity passthrough that still type-checks.
-        let mut s: ResampleStream<MediaFmt, MediaFmt> =
-            ResampleStream::new(Box::new(ConstIn(777)));
+        let mut s: ResampleStream<MediaFmt, MediaFmt> = ResampleStream::new(Box::new(ConstIn(777)));
         let c = s.next_chunk(10).unwrap();
         assert!(c.samples().iter().all(|&v| v == 777));
     }
