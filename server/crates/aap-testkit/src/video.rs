@@ -16,9 +16,6 @@ use tracing::{info, warn};
 
 use aap_video::{VideoFrameSender, VideoStartRx};
 
-const WIDTH: usize = 800;
-const HEIGHT: usize = 480;
-
 /// Blocking H.264 test-pattern producer.
 ///
 /// Create with [`TestVideoProducer::new`], then hand off to a blocking thread:
@@ -46,12 +43,7 @@ impl TestVideoProducer {
             .skip_frames(false)
             .intra_frame_period(IntraFramePeriod::from_num_frames(fps));
         let encoder = Encoder::with_api_config(OpenH264API::from_source(), config)?;
-        info!(
-            width = WIDTH,
-            height = HEIGHT,
-            fps,
-            "test video producer ready"
-        );
+        info!(fps, "test video producer ready");
         Ok(Self {
             encoder,
             frame_count: 0,
@@ -64,19 +56,25 @@ impl TestVideoProducer {
     ///
     /// Call this inside `tokio::task::spawn_blocking` or `std::thread::spawn`.
     pub fn run(mut self, tx: VideoFrameSender, start: VideoStartRx) {
-        // Block until the head unit grants video focus.  Encoding only now
-        // guarantees the first frame the head unit sees is a keyframe.
-        if !start.wait() {
+        // Block until the head unit grants video focus, which yields the
+        // negotiated resolution.  Encoding only now guarantees the first frame
+        // the head unit sees is a keyframe.
+        let Some(mode) = start.wait() else {
             info!("test video producer: focus gate dropped before signal, stopping");
             return;
-        }
-        info!("test video producer: focus granted — starting encode");
+        };
+        let (w, h) = (mode.width as usize, mode.height as usize);
+        info!(
+            width = w,
+            height = h,
+            "test video producer: focus granted — starting encode"
+        );
 
         let interval = Duration::from_secs_f64(1.0 / self.fps as f64);
         let mut deadline = Instant::now() + interval;
 
         loop {
-            let nal = self.next_frame();
+            let nal = self.next_frame(w, h);
 
             if !nal.is_empty() {
                 let timestamp_us = (self.frame_count - 1) * 1_000_000 / self.fps as u64;
@@ -105,25 +103,25 @@ impl TestVideoProducer {
         }
     }
 
-    fn next_frame(&mut self) -> Vec<u8> {
-        let yuv = self.make_yuv();
+    fn next_frame(&mut self, w: usize, h: usize) -> Vec<u8> {
+        let yuv = self.make_yuv(w, h);
         let bitstream = self.encoder.encode(&yuv).expect("openh264 encode");
         self.frame_count += 1;
         bitstream.to_vec()
     }
 
-    fn make_yuv(&self) -> YUVBuffer {
+    fn make_yuv(&self, w: usize, h: usize) -> YUVBuffer {
         // Cycle Red → Green → Blue every 90 frames (~3 s at 30 fps).
         let (y, u, v): (u8, u8, u8) = match (self.frame_count / 90) % 3 {
             0 => (76, 84, 255),  // Red
             1 => (150, 44, 21),  // Green
             _ => (29, 255, 107), // Blue
         };
-        let n_luma = WIDTH * HEIGHT;
+        let n_luma = w * h;
         let n_chroma = n_luma / 4;
         let mut buf = vec![y; n_luma];
         buf.extend(vec![u; n_chroma]);
         buf.extend(vec![v; n_chroma]);
-        YUVBuffer::from_vec(buf, WIDTH, HEIGHT)
+        YUVBuffer::from_vec(buf, w, h)
     }
 }

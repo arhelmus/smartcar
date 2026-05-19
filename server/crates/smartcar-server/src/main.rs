@@ -210,27 +210,27 @@ fn start_flutter_producers(
     video_start_rx: VideoStartRx,
 ) -> Result<(), (anyhow::Error, VideoStartRx)> {
     use aap_flutter::{
-        new_store, resolve_flutter_paths, FlutterEngineHandle, FlutterVideoProducer, HEIGHT, WIDTH,
+        new_store, resolve_flutter_paths, FlutterEngineHandle, FlutterVideoProducer,
     };
 
-    // Every fallible step runs before the gate is consumed, so the rx can be
-    // returned intact for the testkit fallback.
-    let result = (|| -> anyhow::Result<(FlutterEngineHandle, FlutterVideoProducer, _)> {
+    // Launch the engine now, but defer window-metrics/encoder sizing to the
+    // producer: the resolution isn't known until the head unit's
+    // AVChannelSetupResponse arrives, which the producer receives via the
+    // focus gate. Every fallible step here runs before the gate is consumed,
+    // so the rx can be returned intact for the testkit fallback.
+    let result = (|| -> anyhow::Result<(FlutterEngineHandle, _)> {
         let (assets, icu) = resolve_flutter_paths();
         let store = new_store();
         let engine = FlutterEngineHandle::launch(&assets, &icu, store.clone())?;
-        engine.send_window_metrics(WIDTH as u32, HEIGHT as u32, 1.0)?;
-        let producer = FlutterVideoProducer::new(30)?;
-        Ok((engine, producer, store))
+        Ok((engine, store))
     })();
 
     match result {
-        Ok((engine, producer, store)) => {
+        Ok((engine, store)) => {
             tokio::task::spawn_blocking(move || {
-                // `engine` is moved in so it lives as long as the encode loop;
-                // dropping it here shuts the Flutter engine down cleanly.
-                let _engine = engine;
-                producer.run(store, frame_tx, video_start_rx);
+                // `engine` is moved into the producer so it outlives the encode
+                // loop and is shut down cleanly when the loop returns.
+                FlutterVideoProducer::new().run(store, frame_tx, video_start_rx, engine);
             });
             Ok(())
         }

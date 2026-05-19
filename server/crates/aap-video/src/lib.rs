@@ -17,6 +17,7 @@
 
 pub mod channel;
 mod config;
+mod mode;
 mod service;
 mod sink;
 
@@ -25,5 +26,6 @@ pub use channel::{
     VideoStartTx,
 };
 pub use config::VideoConfig;
+pub use mode::{mode_from_setup_response, VideoMode, DEFAULT_VIDEO_MODE, VIDEO_MODES};
 pub use service::VideoService;
 pub use sink::{FrameSink, NullSink};

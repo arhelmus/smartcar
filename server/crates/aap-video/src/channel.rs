@@ -29,6 +29,8 @@
 use bytes::Bytes;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::mode::VideoMode;
+
 /// How many encoded frames the channel buffers before the producer blocks.
 /// 16 frames ≈ 0.5 s at 30 fps — enough to ride out scheduling jitter
 /// without unbounded growth.
@@ -48,27 +50,28 @@ pub fn video_frame_channel() -> (VideoFrameSender, VideoFrameReceiver) {
 }
 
 /// Connection-side trigger that releases the video producer once the head
-/// unit has granted video focus.
-pub struct VideoStartTx(oneshot::Sender<()>);
+/// unit has granted video focus, carrying the negotiated [`VideoMode`].
+pub struct VideoStartTx(oneshot::Sender<VideoMode>);
 
 impl VideoStartTx {
-    /// Release the producer so it starts encoding from a fresh IDR.
-    ///
-    /// A no-op if the producer is already gone (receiver dropped).
-    pub fn signal(self) {
-        let _ = self.0.send(());
+    /// Release the producer with the negotiated resolution so it sizes the
+    /// encoder (and renderer) to the head unit's screen and starts from a
+    /// fresh IDR.  A no-op if the producer is already gone (receiver dropped).
+    pub fn signal(self, mode: VideoMode) {
+        let _ = self.0.send(mode);
     }
 }
 
 /// Producer-side gate — blocks the encode loop until focus is granted.
-pub struct VideoStartRx(oneshot::Receiver<()>);
+pub struct VideoStartRx(oneshot::Receiver<VideoMode>);
 
 impl VideoStartRx {
     /// Block the current (blocking) thread until [`VideoStartTx::signal`] is
-    /// called.  Returns `false` if the trigger was dropped without signalling
-    /// (connection torn down before focus) — the producer should then stop.
-    pub fn wait(self) -> bool {
-        self.0.blocking_recv().is_ok()
+    /// called, returning the negotiated [`VideoMode`].  `None` if the trigger
+    /// was dropped without signalling (connection torn down before focus) —
+    /// the producer should then stop.
+    pub fn wait(self) -> Option<VideoMode> {
+        self.0.blocking_recv().ok()
     }
 }
 

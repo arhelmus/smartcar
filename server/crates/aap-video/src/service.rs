@@ -72,37 +72,35 @@ impl VideoService {
     /// `aap-core` fills in) advertising a single 720p/30fps video configuration.
     fn build_descriptor_bytes(&self) -> Bytes {
         use aap_proto::data::{AvChannel, ChannelDescriptor, VideoConfig as ProtoVideoConfig};
-        use aap_proto::enums::{av_stream_type, video_fps, video_resolution};
+        use aap_proto::enums::{av_stream_type, video_fps};
         use prost::Message;
 
-        // Map our fps to the proto enum value.
-        let proto_fps = if self.config.fps >= 60 {
-            video_fps::Enum::_60 as i32
-        } else {
-            video_fps::Enum::_30 as i32
-        };
+        use crate::mode::VIDEO_MODES;
 
-        // Map our resolution to the proto enum value.
-        let proto_resolution = match (self.config.width, self.config.height) {
-            (w, _) if w >= 1920 => video_resolution::Enum::_1080p as i32,
-            (w, _) if w >= 1280 => video_resolution::Enum::_720p as i32,
-            _ => video_resolution::Enum::_480p as i32,
-        };
-
-        let video_cfg = ProtoVideoConfig {
-            video_resolution: proto_resolution,
-            video_fps: proto_fps,
-            margin_width: self.config.margin,
-            margin_height: self.config.margin,
-            dpi: 140,
-            additional_depth: None,
-        };
+        // Advertise the full ordered mode list; the head unit selects the one
+        // matching its screen and echoes the index back in the
+        // AVChannelSetupResponse.  Order here IS the config_index contract.
+        let video_configs = VIDEO_MODES
+            .iter()
+            .map(|m| ProtoVideoConfig {
+                video_resolution: m.resolution_enum,
+                video_fps: if m.fps >= 60 {
+                    video_fps::Enum::_60 as i32
+                } else {
+                    video_fps::Enum::_30 as i32
+                },
+                margin_width: self.config.margin,
+                margin_height: self.config.margin,
+                dpi: 140,
+                additional_depth: None,
+            })
+            .collect();
 
         let av_channel = AvChannel {
             stream_type: av_stream_type::Enum::Video as i32,
             audio_type: None,
             audio_configs: vec![],
-            video_configs: vec![video_cfg],
+            video_configs,
             available_while_in_call: Some(false),
         };
 

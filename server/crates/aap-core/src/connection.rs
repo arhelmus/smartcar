@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 
 use aap_contracts::{AapError, Result};
 use aap_contracts::{ChannelId, FrameFlags, MessageType, Transport};
-use aap_video::{VideoFrameReceiver, VideoStartTx};
+use aap_video::{mode_from_setup_response, VideoFrameReceiver, VideoMode, VideoStartTx};
 
 use crate::control::{
     build_data_frame, encode_control, encode_control_on, parse_message_type, proto_body,
@@ -70,8 +70,12 @@ pub struct Connection<T: Transport> {
     video_active: bool,
     /// Ordered encoded-frame stream from the producer (mpsc read-end).
     frame_rx: VideoFrameReceiver,
-    /// Fired once when video focus is granted, releasing the gated producer.
+    /// Fired once when video focus is granted, releasing the gated producer
+    /// with [`negotiated_mode`](Self::negotiated_mode).
     video_start: Option<VideoStartTx>,
+    /// Resolution the head unit selected in its `AVChannelSetupResponse`
+    /// (parsed from the `0x8003` body); defaults until that arrives.
+    negotiated_mode: VideoMode,
 }
 
 impl<T: Transport> Connection<T> {
@@ -94,6 +98,7 @@ impl<T: Transport> Connection<T> {
             video_active: false,
             frame_rx,
             video_start: Some(video_start),
+            negotiated_mode: aap_video::DEFAULT_VIDEO_MODE,
         }
     }
 
@@ -483,6 +488,27 @@ impl<T: Transport> Connection<T> {
         let message_id = u16::from_be_bytes([frame.payload[0], frame.payload[1]]);
         let payload = frame.payload.slice(2..);
 
+        // The head unit's AVChannelSetupResponse carries the resolution it
+        // selected from our advertised list. Capture it before the body is
+        // moved into the service so it can be handed to the gated producer.
+        if channel == ChannelId::Video && message_id == MEDIA_MSG_CONFIG {
+            if let Some(mode) = mode_from_setup_response(&payload) {
+                info!(
+                    width = mode.width,
+                    height = mode.height,
+                    fps = mode.fps,
+                    "video: head unit selected resolution"
+                );
+                self.negotiated_mode = mode;
+            } else {
+                warn!(
+                    "video: could not parse AVChannelSetupResponse; \
+                     using default {}x{}",
+                    self.negotiated_mode.width, self.negotiated_mode.height
+                );
+            }
+        }
+
         match self.registry.get_mut(channel) {
             Some(service) => {
                 let outbound = service
@@ -525,10 +551,11 @@ impl<T: Transport> Connection<T> {
         {
             info!("video: focus granted — releasing producer and streaming");
             self.video_active = true;
-            // Release the gated producer so its first encoded frame (a fresh
-            // IDR) is the first frame forwarded to the head unit.
+            // Release the gated producer with the negotiated resolution so it
+            // sizes the encoder/renderer to the head unit's screen; its first
+            // encoded frame (a fresh IDR) is the first frame forwarded.
             if let Some(start) = self.video_start.take() {
-                start.signal();
+                start.signal(self.negotiated_mode);
             }
         }
 
