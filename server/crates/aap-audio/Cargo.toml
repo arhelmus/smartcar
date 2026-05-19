@@ -11,5 +11,6 @@ aap-proto     = { workspace = true }
 async-trait   = { workspace = true }
 bytes         = { workspace = true }
 prost         = { workspace = true }
+thiserror     = { workspace = true }
 tokio         = { workspace = true }
 tracing       = { workspace = true }

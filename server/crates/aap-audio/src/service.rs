@@ -1,8 +1,9 @@
-//! [`AudioService`] — Android Auto AV-channel service for one audio stream.
+//! [`AudioService<F>`] — Android Auto AV-channel service for one audio stream.
 //!
-//! Handles the per-channel handshake (`SETUP_RESPONSE` → `START_INDICATION`)
-//! and drives outbound PCM frame production via an [`AudioStream`] on every
-//! [`tick`](aap_contracts::Service::tick) call from the connection loop.
+//! The format is the type parameter `F`: the wire channel, the protobuf
+//! descriptor and the PCM layout all derive from `F`'s constants, so a
+//! Speech-format service on the Media channel is unconstructable.  Handles
+//! the per-channel handshake and drives outbound PCM on every `tick`.
 //!
 //! # Wire flow (phone-initiated)
 //!
@@ -14,17 +15,19 @@
 //! HU → Phone : AV_MEDIA_ACK        (0x8004)  flow control (ignored for now)
 //! ```
 
+use std::marker::PhantomData;
+
 use async_trait::async_trait;
 use bytes::{BufMut, Bytes, BytesMut};
 use prost::Message as _;
 use tracing::{debug, info, warn};
 
-use aap_contracts::{ChannelId, Frame, FrameFlags, Service, ServiceDescriptor, ServiceError};
+use aap_contracts::{Frame, FrameFlags, Service, ServiceDescriptor, ServiceError};
 use aap_proto::data::{AudioConfig as ProtoAudioConfig, AvChannel, ChannelDescriptor};
 use aap_proto::enums::{audio_type, av_stream_type};
 
-use super::config::{AudioStreamConfig, AudioType};
-use super::stream::AudioStream;
+use crate::format::{AudioFormat, AudioType};
+use crate::stream::AudioStream;
 
 // ── AV message IDs (shared with video channel) ────────────────────────────────
 
@@ -37,65 +40,51 @@ const MSG_SETUP_RESPONSE: u16 = 0x8003;
 /// HU → Phone: flow-control acknowledgement.
 const MSG_ACK: u16 = 0x8004;
 
-// ── AudioService ──────────────────────────────────────────────────────────────
+// ── AudioService<F> ───────────────────────────────────────────────────────────
 
-/// Android Auto audio projection service for one stream type.
+/// Android Auto audio projection service for format `F`.
 ///
-/// Instantiate one service per audio channel (`MediaAudio`, `SpeechAudio`,
-/// `SystemAudio`), backed by a [`MixerSink`](super::mixer::MixerSink) or any
-/// other [`AudioStream`] implementation.
+/// Instantiate one per audio format ([`MediaFmt`], [`SpeechFmt`],
+/// [`SystemFmt`]), backed by a [`MixerSink<F>`] or any [`AudioStream<F>`].
+/// The channel is fixed by `F::CHANNEL` — there is no channel argument to get
+/// wrong.
 ///
-/// Register the service with [`ServiceRegistry`](aap_core::ServiceRegistry)
-/// before starting the connection; the connection loop will call [`tick`] on
-/// the audio ticker and dispatch inbound HU messages to [`handle`].
-///
-/// [`tick`]: aap_contracts::Service::tick
-/// [`handle`]: aap_contracts::Service::handle
-pub struct AudioService {
-    channel: ChannelId,
-    config: AudioStreamConfig,
-    stream: Box<dyn AudioStream>,
+/// [`MediaFmt`]: crate::format::MediaFmt
+/// [`SpeechFmt`]: crate::format::SpeechFmt
+/// [`SystemFmt`]: crate::format::SystemFmt
+/// [`MixerSink<F>`]: crate::mixer::MixerSink
+pub struct AudioService<F: AudioFormat> {
+    stream: Box<dyn AudioStream<F>>,
     /// Duration of each outbound PCM chunk in milliseconds.
     chunk_ms: u32,
     /// Set to `true` after `SETUP_RESPONSE` is received and `START` is sent.
     active: bool,
+    _fmt: PhantomData<F>,
 }
 
-impl AudioService {
-    /// Create a new `AudioService`.
-    ///
-    /// - `channel` must be one of `MediaAudio`, `SpeechAudio`, `SystemAudio`.
-    /// - `config` describes the PCM format; it must match the audio type
-    ///   implied by `channel`.
-    /// - `stream` is the audio source — typically a [`MixerSink`].
-    ///
-    /// [`MixerSink`]: super::mixer::MixerSink
-    pub fn new(
-        channel: ChannelId,
-        config: AudioStreamConfig,
-        stream: Box<dyn AudioStream>,
-    ) -> Self {
+impl<F: AudioFormat> AudioService<F> {
+    /// Create a service for format `F`, backed by `stream`.
+    pub fn new(stream: Box<dyn AudioStream<F>>) -> Self {
         Self {
-            channel,
-            config,
             stream,
             chunk_ms: 10,
             active: false,
+            _fmt: PhantomData,
         }
     }
 
     /// Build the `ChannelDescriptor` proto bytes for service discovery.
     fn build_descriptor_bytes(&self) -> Bytes {
-        let proto_audio_type = match self.config.audio_type {
+        let proto_audio_type = match F::AUDIO_TYPE {
             AudioType::Media => audio_type::Enum::Media as i32,
             AudioType::Speech => audio_type::Enum::Speech as i32,
             AudioType::System => audio_type::Enum::System as i32,
         };
 
         let audio_cfg = ProtoAudioConfig {
-            sample_rate: self.config.sample_rate,
-            bit_depth: self.config.bit_depth,
-            channel_count: self.config.channel_count,
+            sample_rate: F::SAMPLE_RATE,
+            bit_depth: F::BIT_DEPTH,
+            channel_count: F::CHANNEL_COUNT,
         };
 
         let av_channel = AvChannel {
@@ -123,13 +112,13 @@ impl AudioService {
         Bytes::from(buf)
     }
 
-    /// Wrap `body` in a data frame for this service's channel.
+    /// Wrap `body` in a data frame for this format's channel.
     fn build_frame(&self, message_id: u16, body: Bytes) -> Frame {
         let mut payload = BytesMut::with_capacity(2 + body.len());
         payload.put_u16(message_id);
         payload.put(body);
         Frame {
-            channel: self.channel,
+            channel: F::CHANNEL,
             flags: FrameFlags::FIRST | FrameFlags::LAST,
             payload: payload.freeze(),
         }
@@ -137,14 +126,14 @@ impl AudioService {
 }
 
 #[async_trait]
-impl Service for AudioService {
-    fn channel(&self) -> ChannelId {
-        self.channel
+impl<F: AudioFormat> Service for AudioService<F> {
+    fn channel(&self) -> aap_contracts::ChannelId {
+        F::CHANNEL
     }
 
     fn descriptor(&self) -> ServiceDescriptor {
         ServiceDescriptor {
-            channel: self.channel,
+            channel: F::CHANNEL,
             descriptor_bytes: self.build_descriptor_bytes(),
         }
     }
@@ -156,8 +145,7 @@ impl Service for AudioService {
     ) -> Result<Vec<Frame>, ServiceError> {
         match message_id {
             MSG_SETUP_RESPONSE => {
-                // HU accepted our SETUP; reply with START to begin streaming.
-                info!(channel = ?self.channel, "audio: setup response received — sending start");
+                info!(channel = ?F::CHANNEL, "audio: setup response received — sending start");
                 self.active = true;
                 // START proto: { session_id(varint,f1)=1, configuration_index(varint,f2)=0 }
                 let body = Bytes::from_static(&[0x08, 0x01, 0x10, 0x00]);
@@ -165,13 +153,12 @@ impl Service for AudioService {
             }
 
             MSG_ACK => {
-                // Flow-control acknowledgement — ignored until ACK-window tracking lands.
-                debug!(channel = ?self.channel, payload_len = payload.len(), "audio: ack");
+                debug!(channel = ?F::CHANNEL, payload_len = payload.len(), "audio: ack");
                 Ok(vec![])
             }
 
             unknown => {
-                warn!(channel = ?self.channel, message_id = unknown, "audio: unknown message id");
+                warn!(channel = ?F::CHANNEL, message_id = unknown, "audio: unknown message id");
                 Ok(vec![])
             }
         }
@@ -185,9 +172,10 @@ impl Service for AudioService {
             return Ok(vec![]);
         };
         // AV_MEDIA_WITH_TIMESTAMP body: [timestamp_us: u64 BE][S16LE samples]
-        let mut body = BytesMut::with_capacity(8 + chunk.samples.len());
-        body.put_u64(chunk.timestamp_us);
-        body.put(chunk.samples);
+        let bytes = chunk.to_le_bytes();
+        let mut body = BytesMut::with_capacity(8 + bytes.len());
+        body.put_u64(chunk.timestamp_us());
+        body.put(bytes);
         Ok(vec![self.build_frame(MSG_DATA_WITH_TS, body.freeze())])
     }
 }

@@ -28,8 +28,7 @@
 use clap::{Parser, ValueEnum};
 use tokio::net::TcpStream;
 
-use aap_audio::{AudioService, AudioStream, AudioStreamConfig, MixerSink, ResampleStream};
-use aap_contracts::ChannelId;
+use aap_audio::{AudioService, MediaFmt, MixerSink, SpeechFmt, SystemFmt};
 use aap_core::{Connection, ServiceRegistry};
 use aap_testkit::{
     LoopingWavStream, TestVideoProducer, ASSET_KICK_IN, ASSET_SNARE_UNDER, ASSET_SYNTH_01,
@@ -87,14 +86,11 @@ async fn main() -> anyhow::Result<()> {
     let (video_start_tx, video_start_rx) = video_start_gate();
 
     // ── Audio mixers ──────────────────────────────────────────────────────────
-    // Use the canonical per-stream formats the head unit expects.
-    let media_cfg = AudioStreamConfig::media_audio();
-    let speech_cfg = AudioStreamConfig::speech_audio();
-    let system_cfg = AudioStreamConfig::system_audio();
-
-    let mut media_mixer = MixerSink::new(media_cfg.clone());
-    let mut speech_mixer = MixerSink::new(speech_cfg.clone());
-    let mut system_mixer = MixerSink::new(system_cfg.clone());
+    // Format is the type parameter; the canonical per-stream layout the head
+    // unit expects is encoded in MediaFmt/SpeechFmt/SystemFmt.
+    let mut media_mixer = MixerSink::<MediaFmt>::new();
+    let mut speech_mixer = MixerSink::<SpeechFmt>::new();
+    let mut system_mixer = MixerSink::<SystemFmt>::new();
 
     // Flutter is the default; --testkit forces the synthetic producers.
     // If the Flutter renderer can't start (not compiled in, engine init
@@ -126,21 +122,9 @@ async fn main() -> anyhow::Result<()> {
     // ── Transport + connection ────────────────────────────────────────────────
     let mut registry = ServiceRegistry::new();
     registry.register(VideoService::new(VideoConfig::default()));
-    registry.register(AudioService::new(
-        ChannelId::MediaAudio,
-        media_cfg,
-        Box::new(media_mixer),
-    ));
-    registry.register(AudioService::new(
-        ChannelId::SpeechAudio,
-        speech_cfg,
-        Box::new(speech_mixer),
-    ));
-    registry.register(AudioService::new(
-        ChannelId::SystemAudio,
-        system_cfg,
-        Box::new(system_mixer),
-    ));
+    registry.register(AudioService::new(Box::new(media_mixer)));
+    registry.register(AudioService::new(Box::new(speech_mixer)));
+    registry.register(AudioService::new(Box::new(system_mixer)));
 
     match args.transport {
         TransportChoice::Tcp => {
@@ -183,9 +167,9 @@ async fn main() -> anyhow::Result<()> {
 fn start_testkit_producers(
     frame_tx: aap_video::VideoFrameSender,
     video_start_rx: VideoStartRx,
-    media_mixer: &mut MixerSink,
-    speech_mixer: &mut MixerSink,
-    system_mixer: &mut MixerSink,
+    media_mixer: &mut MixerSink<MediaFmt>,
+    speech_mixer: &mut MixerSink<SpeechFmt>,
+    system_mixer: &mut MixerSink<SystemFmt>,
 ) -> anyhow::Result<()> {
     // Video: colour-cycling H.264 test pattern at 30 fps. The producer stays
     // idle until Connection signals video focus via the start gate.
@@ -193,44 +177,20 @@ fn start_testkit_producers(
     tokio::task::spawn_blocking(move || video_producer.run(frame_tx, video_start_rx));
 
     // Audio: pull-based looping WAV streams — no threads, no channels, no
-    // timing drift.  The mixer tick drives sample generation synchronously.
-    // The embedded assets are 44.1 kHz; each is resampled to its channel's
-    // canonical rate via a chained ResampleStream before reaching the mixer.
-    let media_cfg = media_mixer.config().clone();
-    let speech_cfg = speech_mixer.config().clone();
-    let system_cfg = system_mixer.config().clone();
-
-    media_mixer.add_stream(looping_wav_resampled(ASSET_SYNTH_01, &media_cfg)?);
-    speech_mixer.add_stream(looping_wav_resampled(ASSET_KICK_IN, &speech_cfg)?);
-    system_mixer.add_stream(looping_wav_resampled(ASSET_SNARE_UNDER, &system_cfg)?);
+    // timing drift.  Each WAV is decoded and run once through the Normalizer
+    // boundary into its channel's format inside LoopingWavStream, so the
+    // mixer only ever sees uniform, type-correct samples.
+    media_mixer.add_stream(Box::new(LoopingWavStream::<MediaFmt>::from_embedded_wav(
+        ASSET_SYNTH_01,
+    )?));
+    speech_mixer.add_stream(Box::new(LoopingWavStream::<SpeechFmt>::from_embedded_wav(
+        ASSET_KICK_IN,
+    )?));
+    system_mixer.add_stream(Box::new(LoopingWavStream::<SystemFmt>::from_embedded_wav(
+        ASSET_SNARE_UNDER,
+    )?));
 
     Ok(())
-}
-
-/// Sample rate of every embedded testkit WAV asset.
-const ASSET_WAV_RATE: u32 = 44_100;
-
-/// Build a looping WAV source resampled to `out_cfg`'s rate.
-///
-/// `LoopingWavStream` decodes the 44.1 kHz asset and adapts its channel
-/// count to `out_cfg`; `ResampleStream` then converts 44.1 kHz → the
-/// channel's canonical rate so the mixer sees a single uniform format.
-fn looping_wav_resampled(
-    bytes: &'static [u8],
-    out_cfg: &AudioStreamConfig,
-) -> anyhow::Result<Box<dyn AudioStream>> {
-    let in_cfg = AudioStreamConfig {
-        sample_rate: ASSET_WAV_RATE,
-        bit_depth: 16,
-        channel_count: out_cfg.channel_count,
-        audio_type: out_cfg.audio_type,
-    };
-    let wav = LoopingWavStream::from_embedded_wav(bytes, in_cfg.clone())?;
-    Ok(Box::new(ResampleStream::new(
-        Box::new(wav),
-        in_cfg,
-        out_cfg.sample_rate,
-    )))
 }
 
 // ── Flutter producers ─────────────────────────────────────────────────────────
