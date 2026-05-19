@@ -164,10 +164,9 @@ fn setup_gadget(name: &str, vid: u16, pid: u16, ffs_mount: &str) -> io::Result<(
         .args(["-t", "functionfs", name, ffs_mount])
         .status()?;
     if !status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("mount functionfs {name} → {ffs_mount} failed: {status}"),
-        ));
+        return Err(io::Error::other(format!(
+            "mount functionfs {name} → {ffs_mount} failed: {status}"
+        )));
     }
 
     debug!("FunctionFS mounted at {ffs_mount}");
@@ -262,7 +261,7 @@ fn wait_for_enable(ep0: &mut fs::File) -> io::Result<()> {
 
 /// Return the name of the first available USB Device Controller.
 fn find_udc() -> io::Result<String> {
-    for entry in fs::read_dir("/sys/class/udc/")? {
+    if let Some(entry) = fs::read_dir("/sys/class/udc/")?.next() {
         return Ok(entry?.file_name().to_string_lossy().into_owned());
     }
     Err(io::Error::new(

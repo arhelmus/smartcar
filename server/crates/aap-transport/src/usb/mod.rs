@@ -74,7 +74,7 @@ impl UsbTransport {
 
         let (guard, ep1_std, ep2_std) = tokio::task::spawn_blocking(gadget::run_handshake)
             .await
-            .map_err(|e| TransportError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
+            .map_err(|e| TransportError::Io(std::io::Error::other(e)))?
             .map_err(TransportError::Io)?;
 
         let ep1_tx = tokio::fs::File::from_std(ep1_std);
