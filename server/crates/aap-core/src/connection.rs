@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 
 use aap_contracts::{AapError, Result};
 use aap_contracts::{ChannelId, FrameFlags, MessageType, Transport};
-use aap_video::{mode_from_setup_response, VideoFrameReceiver, VideoMode, VideoStartTx};
+use aap_video::{resolve, VideoCfg, VideoFrameReceiver, VideoStartTx};
 
 use crate::control::{
     build_data_frame, encode_control, encode_control_on, parse_message_type, proto_body,
@@ -71,11 +71,14 @@ pub struct Connection<T: Transport> {
     /// Ordered encoded-frame stream from the producer (mpsc read-end).
     frame_rx: VideoFrameReceiver,
     /// Fired once when video focus is granted, releasing the gated producer
-    /// with [`negotiated_mode`](Self::negotiated_mode).
+    /// with [`negotiated`](Self::negotiated).
     video_start: Option<VideoStartTx>,
-    /// Resolution the head unit selected in its `AVChannelSetupResponse`
-    /// (parsed from the `0x8003` body); defaults until that arrives.
-    negotiated_mode: VideoMode,
+    /// The exact config menu advertised in the descriptor — the head unit's
+    /// selected index is resolved against *this* list.
+    advertised: Vec<VideoCfg>,
+    /// Config the head unit selected in its `AVChannelSetupResponse` (parsed
+    /// from the `0x8003` body); defaults until that arrives.
+    negotiated: VideoCfg,
 }
 
 impl<T: Transport> Connection<T> {
@@ -86,19 +89,25 @@ impl<T: Transport> Connection<T> {
     /// The matching sender and gate receiver are held by a frame producer (e.g.
     /// [`aap_testkit::TestVideoProducer`] or the Flutter embedder), which only
     /// begins encoding once focus is granted, then streams NALs in order.
+    /// `advertised` must be the *same* config menu the registered
+    /// [`VideoService`] put in the descriptor — the head unit's selected
+    /// index only has meaning relative to that list.
     pub fn new(
         transport: T,
         registry: ServiceRegistry,
         frame_rx: VideoFrameReceiver,
         video_start: VideoStartTx,
+        advertised: Vec<VideoCfg>,
     ) -> Self {
+        let negotiated = advertised.first().copied().unwrap_or(aap_video::FALLBACK);
         Self {
             transport,
             registry,
             video_active: false,
             frame_rx,
             video_start: Some(video_start),
-            negotiated_mode: aap_video::DEFAULT_VIDEO_MODE,
+            advertised,
+            negotiated,
         }
     }
 
@@ -492,19 +501,22 @@ impl<T: Transport> Connection<T> {
         // selected from our advertised list. Capture it before the body is
         // moved into the service so it can be handed to the gated producer.
         if channel == ChannelId::Video && message_id == MEDIA_MSG_CONFIG {
-            if let Some(mode) = mode_from_setup_response(&payload) {
+            if let Some(cfg) = resolve(&self.advertised, &payload) {
                 info!(
-                    width = mode.width,
-                    height = mode.height,
-                    fps = mode.fps,
-                    "video: head unit selected resolution"
+                    width = cfg.width,
+                    height = cfg.height,
+                    fps = cfg.fps_hz(),
+                    dpi = cfg.dpi,
+                    margin_w = cfg.margin_width,
+                    margin_h = cfg.margin_height,
+                    "video: head unit selected config"
                 );
-                self.negotiated_mode = mode;
+                self.negotiated = cfg;
             } else {
                 warn!(
                     "video: could not parse AVChannelSetupResponse; \
                      using default {}x{}",
-                    self.negotiated_mode.width, self.negotiated_mode.height
+                    self.negotiated.width, self.negotiated.height
                 );
             }
         }
@@ -555,7 +567,7 @@ impl<T: Transport> Connection<T> {
             // sizes the encoder/renderer to the head unit's screen; its first
             // encoded frame (a fresh IDR) is the first frame forwarded.
             if let Some(start) = self.video_start.take() {
-                start.signal(self.negotiated_mode);
+                start.signal(self.negotiated);
             }
         }
 

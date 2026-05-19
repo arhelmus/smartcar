@@ -24,7 +24,7 @@ use tracing::{debug, info, warn};
 use aap_contracts::{ChannelId, Frame, FrameFlags, Service, ServiceDescriptor, ServiceError};
 
 use crate::sink::{FrameSink, NullSink};
-use crate::VideoConfig;
+use crate::VideoCfg;
 
 // ── Media message IDs for the video channel (MediaMessageId.proto) ────────────
 
@@ -46,7 +46,9 @@ const MSG_VIDEO_FOCUS_NOTIFICATION: u16 = 0x8008;
 /// used (NALs are logged and discarded).  Pass a custom sink via
 /// [`VideoService::with_sink`] to plug in a real renderer.
 pub struct VideoService {
-    config: VideoConfig,
+    /// The advertised config menu — must be the *same* list the connection
+    /// resolves the head unit's selected index against.
+    advertised: Vec<VideoCfg>,
     /// Sink for outbound NAL units — used when video sending is implemented.
     #[allow(dead_code)]
     sink: Box<dyn FrameSink>,
@@ -54,45 +56,39 @@ pub struct VideoService {
 
 impl VideoService {
     /// Create a new `VideoService` backed by the no-op [`NullSink`].
-    pub fn new(config: VideoConfig) -> Self {
+    pub fn new(advertised: Vec<VideoCfg>) -> Self {
         Self {
-            config,
+            advertised,
             sink: Box::new(NullSink),
         }
     }
 
     /// Create a `VideoService` that forwards NAL units to `sink`.
-    pub fn with_sink(config: VideoConfig, sink: Box<dyn FrameSink>) -> Self {
-        Self { config, sink }
+    pub fn with_sink(advertised: Vec<VideoCfg>, sink: Box<dyn FrameSink>) -> Self {
+        Self { advertised, sink }
     }
 
     /// Build the encoded `AVChannel` descriptor bytes for service discovery.
     ///
     /// Returns a prost-encoded `ChannelDescriptor` (without `channel_id`, which
-    /// `aap-core` fills in) advertising a single 720p/30fps video configuration.
+    /// `aap-core` fills in) advertising the negotiable config menu, in order.
+    /// The head unit selects a row by index in its `AVChannelSetupResponse`,
+    /// so each entry must be reproduced exactly as advertised here.
     fn build_descriptor_bytes(&self) -> Bytes {
         use aap_proto::data::{AvChannel, ChannelDescriptor, VideoConfig as ProtoVideoConfig};
-        use aap_proto::enums::{av_stream_type, video_fps};
+        use aap_proto::enums::av_stream_type;
         use prost::Message;
 
-        use crate::mode::VIDEO_MODES;
-
-        // Advertise the full ordered mode list; the head unit selects the one
-        // matching its screen and echoes the index back in the
-        // AVChannelSetupResponse.  Order here IS the config_index contract.
-        let video_configs = VIDEO_MODES
+        let video_configs = self
+            .advertised
             .iter()
-            .map(|m| ProtoVideoConfig {
-                video_resolution: m.resolution_enum,
-                video_fps: if m.fps >= 60 {
-                    video_fps::Enum::_60 as i32
-                } else {
-                    video_fps::Enum::_30 as i32
-                },
-                margin_width: self.config.margin,
-                margin_height: self.config.margin,
-                dpi: 140,
-                additional_depth: None,
+            .map(|c| ProtoVideoConfig {
+                video_resolution: c.resolution,
+                video_fps: c.fps,
+                margin_width: c.margin_width,
+                margin_height: c.margin_height,
+                dpi: c.dpi,
+                additional_depth: c.additional_depth,
             })
             .collect();
 
@@ -199,10 +195,10 @@ mod tests {
     use aap_contracts::ChannelId;
 
     use super::*;
-    use crate::VideoConfig;
+    use crate::{advertise, SOFTWARE_CAPS};
 
     fn make_service() -> VideoService {
-        VideoService::new(VideoConfig::default())
+        VideoService::new(advertise(&SOFTWARE_CAPS))
     }
 
     #[test]

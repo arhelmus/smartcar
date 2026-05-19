@@ -7,7 +7,7 @@
 //! fulfils, so [`Connection`] is unaware of the source.
 //!
 //! It runs on a **blocking thread** and waits on the video focus gate, which
-//! yields the [`VideoMode`] the head unit negotiated.  Only then are the
+//! yields the [`VideoCfg`] the head unit negotiated.  Only then are the
 //! engine's window metrics and the encoder sized — so the render surface and
 //! the H.264 stream both match the head unit's screen — and the first encoded
 //! frame is a fresh-encoder IDR.
@@ -22,7 +22,7 @@ use openh264::{
 };
 use tracing::{debug, info};
 
-use aap_video::{VideoFrameSender, VideoMode, VideoStartRx};
+use aap_video::{VideoCfg, VideoFrameSender, VideoStartRx};
 
 use crate::engine::FlutterEngineHandle;
 use crate::texture::SharedPixelStore;
@@ -49,7 +49,7 @@ impl FlutterVideoProducer {
     }
 
     /// Block on the focus gate, size the engine + encoder to the negotiated
-    /// [`VideoMode`], then encode the latest Flutter frame until the receiver
+    /// [`VideoCfg`], then encode the latest Flutter frame until the receiver
     /// is dropped.  Call inside `tokio::task::spawn_blocking`.
     ///
     /// `engine` is owned here so the engine outlives the encode loop and is
@@ -61,18 +61,21 @@ impl FlutterVideoProducer {
         start: VideoStartRx,
         engine: FlutterEngineHandle,
     ) {
-        let Some(mode) = start.wait() else {
+        let Some(cfg) = start.wait() else {
             info!("flutter video producer: focus gate dropped before signal, stopping");
             return;
         };
 
-        // Size the render surface to the head unit's screen.
-        if let Err(e) = engine.send_window_metrics(mode.width, mode.height, 1.0) {
+        // Flutter renders the inner (post-margin) area at the negotiated
+        // density; the encoded frame is the full width×height with the inner
+        // image letterboxed into it.
+        let (iw, ih) = cfg.inner();
+        if let Err(e) = engine.send_window_metrics(iw, ih, cfg.pixel_ratio()) {
             tracing::warn!(error = %e, "flutter video producer: window metrics failed");
             return;
         }
 
-        let fps = mode.fps.clamp(1, SOFTWARE_FPS_CAP);
+        let fps = cfg.fps_hz().clamp(1, SOFTWARE_FPS_CAP);
         let mut encoder = match build_encoder(fps) {
             Ok(e) => e,
             Err(e) => {
@@ -81,9 +84,12 @@ impl FlutterVideoProducer {
             }
         };
         info!(
-            width = mode.width,
-            height = mode.height,
+            width = cfg.width,
+            height = cfg.height,
+            inner_w = iw,
+            inner_h = ih,
             fps,
+            dpi = cfg.dpi,
             "flutter video producer: focus granted — starting encode"
         );
 
@@ -92,7 +98,7 @@ impl FlutterVideoProducer {
         let mut frame_count: u64 = 0;
 
         loop {
-            if let Some(nal) = encode_latest(&mut encoder, &store, &mode) {
+            if let Some(nal) = encode_latest(&mut encoder, &store, &cfg) {
                 if !nal.is_empty() {
                     let timestamp_us = frame_count * 1_000_000 / fps as u64;
                     frame_count += 1;
@@ -141,21 +147,43 @@ fn build_encoder(fps: u32) -> anyhow::Result<Encoder> {
     )?)
 }
 
-/// Snapshot the latest frame and encode it.  `None` (skip this tick) until
-/// Flutter has produced a frame at the negotiated size.
+/// Snapshot the latest Flutter frame, letterbox it into the full encoded
+/// frame, and encode.  `None` (skip this tick) until Flutter has produced a
+/// frame at the negotiated inner (post-margin) size.
 fn encode_latest(
     encoder: &mut Encoder,
     store: &SharedPixelStore,
-    mode: &VideoMode,
+    cfg: &VideoCfg,
 ) -> Option<Vec<u8>> {
-    let (rgba, w, h) = {
+    let (iw, ih) = cfg.inner();
+    let inner = {
         let s = store.read();
-        if s.width != mode.width || s.height != mode.height {
+        if s.width != iw || s.height != ih {
             return None;
         }
-        (s.rgba.clone(), s.width as usize, s.height as usize)
+        s.rgba.clone()
     };
-    let yuv = rgba_to_i420(&rgba, w, h);
+
+    let (fw, fh) = (cfg.width as usize, cfg.height as usize);
+    let canvas = if iw == cfg.width && ih == cfg.height {
+        // No margins — the inner buffer already is the full frame.
+        inner
+    } else {
+        // Letterbox: blit the inner image into a black full-size canvas at
+        // the margin offset.  Black is all-zero RGB (alpha is ignored by the
+        // I420 conversion); BT.601 maps it to Y=16, U=V=128.
+        let (ox, oy) = cfg.offset();
+        let (ox, oy, iw, ih) = (ox as usize, oy as usize, iw as usize, ih as usize);
+        let mut canvas = vec![0u8; fw * fh * 4];
+        for row in 0..ih {
+            let src = row * iw * 4;
+            let dst = ((oy + row) * fw + ox) * 4;
+            canvas[dst..dst + iw * 4].copy_from_slice(&inner[src..src + iw * 4]);
+        }
+        canvas
+    };
+
+    let yuv = rgba_to_i420(&canvas, fw, fh);
     let bitstream = encoder.encode(&yuv).expect("openh264 encode");
     Some(bitstream.to_vec())
 }

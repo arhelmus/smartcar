@@ -14,12 +14,13 @@
 //!
 //! ```no_run
 //! # use aap_core::{Connection, ServiceRegistry};
-//! # use aap_video::{video_frame_channel, video_start_gate};
+//! # use aap_video::{advertise, video_frame_channel, video_start_gate, SOFTWARE_CAPS};
 //! # async fn example<T: aap_contracts::Transport>(transport: T) {
 //! let registry = ServiceRegistry::new();
 //! let (_frame_tx, frame_rx) = video_frame_channel();
 //! let (video_start_tx, _video_start_rx) = video_start_gate();
-//! let conn = Connection::new(transport, registry, frame_rx, video_start_tx);
+//! let advertised = advertise(&SOFTWARE_CAPS);
+//! let conn = Connection::new(transport, registry, frame_rx, video_start_tx, advertised);
 //! conn.run().await.unwrap();
 //! # }
 //! ```

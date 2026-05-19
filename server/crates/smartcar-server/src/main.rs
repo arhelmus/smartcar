@@ -34,7 +34,9 @@ use aap_testkit::{
     LoopingWavStream, TestVideoProducer, ASSET_KICK_IN, ASSET_SNARE_UNDER, ASSET_SYNTH_01,
 };
 use aap_transport::TcpTransport;
-use aap_video::{video_frame_channel, video_start_gate, VideoConfig, VideoService, VideoStartRx};
+use aap_video::{
+    advertise, video_frame_channel, video_start_gate, VideoService, VideoStartRx, SOFTWARE_CAPS,
+};
 
 /// Which byte-level transport to use for the AA connection.
 #[derive(ValueEnum, Clone, Debug, PartialEq)]
@@ -123,8 +125,13 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ── Transport + connection ────────────────────────────────────────────────
+    // Build the negotiable config menu once; the descriptor (VideoService) and
+    // the index resolver (Connection) must use the *same* list. Software-path
+    // caps for now; the board GPU path will widen these.
+    let advertised = advertise(&SOFTWARE_CAPS);
+
     let mut registry = ServiceRegistry::new();
-    registry.register(VideoService::new(VideoConfig::default()));
+    registry.register(VideoService::new(advertised.clone()));
     registry.register(AudioService::new(Box::new(media_mixer)));
     registry.register(AudioService::new(Box::new(speech_mixer)));
     registry.register(AudioService::new(Box::new(system_mixer)));
@@ -135,7 +142,7 @@ async fn main() -> anyhow::Result<()> {
             let stream = TcpStream::connect(&args.target).await?;
             tracing::info!("TCP connection established");
             let transport = TcpTransport::new(stream);
-            Connection::new(transport, registry, frame_rx, video_start_tx)
+            Connection::new(transport, registry, frame_rx, video_start_tx, advertised)
                 .run()
                 .await?;
         }
@@ -147,7 +154,7 @@ async fn main() -> anyhow::Result<()> {
                     "USB: starting AOAP handshake — plug the USB cable into the head unit"
                 );
                 let transport = UsbTransport::connect().await?;
-                Connection::new(transport, registry, frame_rx, video_start_tx)
+                Connection::new(transport, registry, frame_rx, video_start_tx, advertised)
                     .run()
                     .await?;
             }
