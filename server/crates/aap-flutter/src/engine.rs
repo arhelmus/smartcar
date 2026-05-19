@@ -206,6 +206,17 @@ impl FlutterEngineHandle {
         Ok(())
     }
 
+    /// A cloneable, thread-safe handle for injecting pointer events.
+    ///
+    /// The embedder pointer API is documented thread-safe, so this can be
+    /// held by the input service (running on the connection task) while the
+    /// engine itself is owned by the producer thread.
+    pub fn pointer_input(&self) -> FlutterPointerInput {
+        FlutterPointerInput {
+            engine: self.engine.0,
+        }
+    }
+
     /// Signal to the engine that a new frame is ready for texture id `0`.
     ///
     /// Called from the Tokio task after each decoded video frame is written
@@ -219,6 +230,56 @@ impl FlutterEngineHandle {
                 "FlutterEngineMarkExternalTextureFrameAvailable failed"
             );
         }
+    }
+}
+
+// ── Pointer input ─────────────────────────────────────────────────────────────
+
+/// Thread-safe handle for feeding head-unit touches into the engine.
+///
+/// Holds the raw engine pointer (valid for the engine's lifetime; the engine
+/// is owned by the producer thread and shut down only when the connection
+/// ends). The embedder pointer API is documented thread-safe.
+#[derive(Clone)]
+pub struct FlutterPointerInput {
+    engine: FlutterEngine,
+}
+
+// Safety: FlutterEngineSendPointerEvent is thread-safe per the embedder docs.
+unsafe impl Send for FlutterPointerInput {}
+unsafe impl Sync for FlutterPointerInput {}
+
+impl FlutterPointerInput {
+    /// Inject one pointer event. `phase` is a `ffi::k{Down,Move,Up}` value.
+    fn send(&self, phase: std::os::raw::c_int, x: f64, y: f64, timestamp_us: u64) {
+        let ev = ffi::FlutterPointerEvent {
+            struct_size: std::mem::size_of::<ffi::FlutterPointerEvent>(),
+            phase,
+            timestamp: timestamp_us as usize,
+            x,
+            y,
+            device: 0,
+            signal_kind: ffi::kFlutterPointerSignalKindNone,
+            scroll_delta_x: 0.0,
+            scroll_delta_y: 0.0,
+            device_kind: ffi::kFlutterPointerDeviceKindTouch,
+            buttons: 0,
+        };
+        let rc = unsafe { ffi::FlutterEngineSendPointerEvent(self.engine, &ev, 1) };
+        if rc != ffi::kSuccess {
+            tracing::warn!(code = rc, "FlutterEngineSendPointerEvent failed");
+        }
+    }
+}
+
+impl aap_input::PointerSink for FlutterPointerInput {
+    fn pointer(&self, phase: aap_input::PointerPhase, x: f64, y: f64, timestamp_us: u64) {
+        let p = match phase {
+            aap_input::PointerPhase::Down => ffi::kDown,
+            aap_input::PointerPhase::Move => ffi::kMove,
+            aap_input::PointerPhase::Up => ffi::kUp,
+        };
+        self.send(p, x, y, timestamp_us);
     }
 }
 

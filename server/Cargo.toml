@@ -7,6 +7,7 @@ members = [
     "crates/aap-core",
     "crates/aap-video",
     "crates/aap-audio",
+    "crates/aap-input",
     "crates/aap-testkit",
     "crates/aap-flutter",
     "crates/smartcar-server",
@@ -26,6 +27,7 @@ aap-transport = { path = "crates/aap-transport" }
 aap-core      = { path = "crates/aap-core" }
 aap-video     = { path = "crates/aap-video" }
 aap-audio     = { path = "crates/aap-audio" }
+aap-input     = { path = "crates/aap-input" }
 aap-testkit   = { path = "crates/aap-testkit" }
 aap-flutter   = { path = "crates/aap-flutter" }
 

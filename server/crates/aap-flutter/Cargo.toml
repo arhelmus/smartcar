@@ -12,6 +12,7 @@ links       = "flutter_engine"
 
 [dependencies]
 aap-video   = { path = "../aap-video" }
+aap-input   = { path = "../aap-input" }
 bytes       = { workspace = true }
 tracing     = { workspace = true }
 anyhow      = { workspace = true }

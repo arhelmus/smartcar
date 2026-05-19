@@ -25,11 +25,14 @@
 //! | `--testkit`               | TestVideoProducer       | looping WAV mixers  |
 //! | default, no `flutter` feat| TestVideoProducer (fb)  | looping WAV mixers  |
 
+use std::sync::Arc;
+
 use clap::{Parser, ValueEnum};
 use tokio::net::TcpStream;
 
 use aap_audio::{AudioService, MediaFmt, MixerSink, SpeechFmt, SystemFmt};
 use aap_core::{Connection, ServiceRegistry};
+use aap_input::{InputService, LogPointerSink, PointerSink};
 use aap_testkit::{
     LoopingWavStream, TestVideoProducer, ASSET_KICK_IN, ASSET_SNARE_UNDER, ASSET_SYNTH_01,
 };
@@ -100,10 +103,15 @@ async fn main() -> anyhow::Result<()> {
     // comes up.
     let mut run_testkit = args.testkit;
     let mut gate = Some(video_start_rx);
+    // The Flutter embedder doubles as the pointer sink (head-unit touches
+    // drive its UI). When Flutter isn't running, touches are logged instead.
+    let mut flutter_pointer: Option<Arc<dyn PointerSink>> = None;
     if !run_testkit {
         let rx = gate.take().expect("gate present before producer selection");
         match start_flutter_producers(frame_tx.clone(), rx) {
-            Ok(()) => {}
+            Ok(sink) => {
+                flutter_pointer = Some(sink);
+            }
             Err((e, rx)) => {
                 tracing::warn!(
                     error = %e,
@@ -130,11 +138,16 @@ async fn main() -> anyhow::Result<()> {
     // caps for now; the board GPU path will widen these.
     let advertised = advertise(&SOFTWARE_CAPS);
 
+    // Head-unit touches go to Flutter when it's running, else to the log.
+    let pointer_sink: Arc<dyn PointerSink> =
+        flutter_pointer.unwrap_or_else(|| Arc::new(LogPointerSink));
+
     let mut registry = ServiceRegistry::new();
     registry.register(VideoService::new(advertised.clone()));
     registry.register(AudioService::new(Box::new(media_mixer)));
     registry.register(AudioService::new(Box::new(speech_mixer)));
     registry.register(AudioService::new(Box::new(system_mixer)));
+    registry.register(InputService::new(pointer_sink));
 
     match args.transport {
         TransportChoice::Tcp => {
@@ -211,11 +224,10 @@ fn start_testkit_producers(
 /// On failure the `VideoStartRx` is handed back so the caller can fall back to
 /// the testkit producers (which need the focus gate).  Audio is silent for now
 /// — only the video path is wired.
-#[cfg(feature = "flutter")]
 fn start_flutter_producers(
     frame_tx: aap_video::VideoFrameSender,
     video_start_rx: VideoStartRx,
-) -> Result<(), (anyhow::Error, VideoStartRx)> {
+) -> Result<Arc<dyn PointerSink>, (anyhow::Error, VideoStartRx)> {
     use aap_flutter::{
         new_store, resolve_flutter_paths, FlutterEngineHandle, FlutterVideoProducer,
     };
@@ -234,27 +246,16 @@ fn start_flutter_producers(
 
     match result {
         Ok((engine, store)) => {
+            // Grab a thread-safe pointer handle before the engine is moved
+            // into the producer thread; it feeds head-unit touches to the UI.
+            let pointer: Arc<dyn PointerSink> = Arc::new(engine.pointer_input());
             tokio::task::spawn_blocking(move || {
                 // `engine` is moved into the producer so it outlives the encode
                 // loop and is shut down cleanly when the loop returns.
                 FlutterVideoProducer::new().run(store, frame_tx, video_start_rx, engine);
             });
-            Ok(())
+            Ok(pointer)
         }
         Err(e) => Err((e, video_start_rx)),
     }
-}
-
-#[cfg(not(feature = "flutter"))]
-fn start_flutter_producers(
-    _frame_tx: aap_video::VideoFrameSender,
-    video_start_rx: VideoStartRx,
-) -> Result<(), (anyhow::Error, VideoStartRx)> {
-    Err((
-        anyhow::anyhow!(
-            "binary built without the `flutter` feature \
-             (build with --features flutter)"
-        ),
-        video_start_rx,
-    ))
 }

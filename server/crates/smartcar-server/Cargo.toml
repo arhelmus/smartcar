@@ -11,8 +11,9 @@ aap-core           = { workspace = true }
 aap-transport      = { workspace = true }
 aap-video          = { workspace = true }
 aap-audio          = { workspace = true }
+aap-input          = { workspace = true }
 aap-testkit        = { workspace = true }
-aap-flutter        = { workspace = true, optional = true }
+aap-flutter        = { workspace = true }
 anyhow             = { workspace = true }
 clap               = { workspace = true }
 tokio              = { workspace = true }
@@ -20,10 +21,6 @@ tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [features]
-# Compile in the Flutter Embedded renderer.
-# Requires FLUTTER_ENGINE_LIB_DIR to be set at build time.
-flutter = ["dep:aap-flutter"]
-
 # Statically vendor OpenSSL — used for cross/board builds so the binary
 # has no runtime libssl dependency on the target.
 openssl-vendored = ["aap-transport/openssl-vendored"]

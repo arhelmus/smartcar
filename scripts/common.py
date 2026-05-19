@@ -233,8 +233,8 @@ def cargo_build_cmd(release: bool, flutter: bool = True) -> list[str]:
         "--manifest-path", str(MANIFEST),
         "--bin", "smartcar-server",
     ]
-    if flutter:
-        cmd += ["--features", "flutter"]
+    # Flutter is always compiled in (no longer a cargo feature); `flutter`
+    # only selects the runtime producer via `--testkit`.
     if release:
         cmd.append("--release")
     return cmd
@@ -249,7 +249,7 @@ def cargo_cross_build_cmd(release: bool, flutter: bool = True) -> list[str]:
     # Vendor OpenSSL statically: the cross toolchain links libssl 1.1 but the
     # board (Debian 13) ships only libssl.so.3, so a dynamic link never
     # resolves. Static vendoring makes the ARM binary self-contained.
-    features = "openssl-vendored,flutter" if flutter else "openssl-vendored"
+    features = "openssl-vendored"
     cmd = [
         "cross", "build", "--target", CROSS_TARGET,
         "--bin", "smartcar-server", "--features", features,
@@ -335,8 +335,8 @@ def cargo_run_cmd(release: bool, target: str, flutter: bool = True) -> list[str]
         "--manifest-path", str(MANIFEST),
         "--bin", "smartcar-server",
     ]
-    if flutter:
-        cmd += ["--features", "flutter"]
+    # Flutter is always compiled in; `flutter=False` only switches the
+    # runtime producer to the synthetic testkit one.
     if release:
         cmd.append("--release")
     cmd += ["--", "--target", target]

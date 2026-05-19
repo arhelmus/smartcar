@@ -46,11 +46,25 @@ dependencies = [
 name = "aap-flutter"
 version = "0.1.0"
 dependencies = [
+ "aap-input",
  "aap-video",
  "anyhow",
  "bytes",
  "openh264",
  "parking_lot",
+ "tracing",
+]
+
+[[package]]
+name = "aap-input"
+version = "0.1.0"
+dependencies = [
+ "aap-contracts",
+ "aap-proto",
+ "async-trait",
+ "bytes",
+ "prost",
+ "thiserror",
  "tracing",
 ]
 
@@ -893,6 +907,7 @@ dependencies = [
  "aap-contracts",
  "aap-core",
  "aap-flutter",
+ "aap-input",
  "aap-testkit",
  "aap-transport",
  "aap-video",

@@ -53,6 +53,11 @@ fn main() {
         "VideoResolutionEnum.proto",
         "VideoFPSEnum.proto",
         "TouchConfigData.proto",
+        "TouchActionEnum.proto",
+        "TouchLocationData.proto",
+        "ButtonEventData.proto",
+        "AbsoluteInputEventData.proto",
+        "RelativeInputEventData.proto",
         "BluetoothPairingMethodEnum.proto",
         "NavigationImageOptionsData.proto",
         "VendorExtensionChannelData.proto",
@@ -60,6 +65,10 @@ fn main() {
         // ── Level-1 data ───────────────────────────────────────────────────
         "SensorData.proto",
         "VideoConfigData.proto",
+        "TouchEventData.proto",
+        "ButtonEventsData.proto",
+        "AbsoluteInputEventsData.proto",
+        "RelativeInputEventsData.proto",
         // ── Level-2 channel descriptors ────────────────────────────────────
         "SensorChannelData.proto",
         "AVChannelData.proto",
@@ -69,6 +78,11 @@ fn main() {
         "NavigationChannelData.proto",
         // ── Level-3 composite descriptor ──────────────────────────────────
         "ChannelDescriptorData.proto",
+        // ── Input-channel messages ─────────────────────────────────────────
+        "InputChannelMessageIdsEnum.proto",
+        "InputEventIndicationMessage.proto",
+        "BindingRequestMessage.proto",
+        "BindingResponseMessage.proto",
         // ── Control-channel messages ───────────────────────────────────────
         "ControlMessageIdsEnum.proto",
         "ServiceDiscoveryRequestMessage.proto",

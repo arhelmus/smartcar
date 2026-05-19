@@ -30,7 +30,7 @@ mod producer;
 mod sink;
 mod texture;
 
-pub use engine::FlutterEngineHandle;
+pub use engine::{FlutterEngineHandle, FlutterPointerInput};
 pub use producer::FlutterVideoProducer;
 pub use sink::FlutterSink;
 pub use texture::{new_store, SharedPixelStore};

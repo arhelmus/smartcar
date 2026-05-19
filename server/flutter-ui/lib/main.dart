@@ -17,12 +17,11 @@ class SmartcarApp extends StatelessWidget {
   }
 }
 
-/// Full-screen Android Auto video stream.
+/// Full-screen Android Auto video stream with an interactive overlay.
 ///
-/// In release/embedded mode: [Texture] consumes frames pushed by the Rust
-/// embedder via [FlutterEngineMarkExternalTextureFrameAvailable].
-/// In debug mode: a placeholder is shown so the UI can be developed without
-/// the Rust embedder running.
+/// Background: in embedded mode the [Texture] shows frames the Rust embedder
+/// pushes; in debug mode a placeholder. On top sits a button + counter so
+/// head-unit touches (relayed through the input channel) are visibly handled.
 class _VideoScreen extends StatelessWidget {
   const _VideoScreen();
 
@@ -30,7 +29,60 @@ class _VideoScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      body: kDebugMode ? const _DevMock() : const SizedBox.expand(child: Texture(textureId: 0)),
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          kDebugMode
+              ? const _DevMock()
+              : const SizedBox.expand(child: Texture(textureId: 0)),
+          const _TapCounter(),
+        ],
+      ),
+    );
+  }
+}
+
+/// A button and a tap counter, centred on screen.
+class _TapCounter extends StatefulWidget {
+  const _TapCounter();
+
+  @override
+  State<_TapCounter> createState() => _TapCounterState();
+}
+
+class _TapCounterState extends State<_TapCounter> {
+  int _count = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'Taps: $_count',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 48,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 24),
+          ElevatedButton(
+            onPressed: () => setState(() => _count++),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.lightBlueAccent,
+              foregroundColor: Colors.black,
+              padding: const EdgeInsets.symmetric(
+                horizontal: 48,
+                vertical: 28,
+              ),
+              textStyle: const TextStyle(fontSize: 28),
+            ),
+            child: const Text('Tap me'),
+          ),
+        ],
+      ),
     );
   }
 }

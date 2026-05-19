@@ -32,6 +32,12 @@ const SENSOR_MSG_REQUEST: u16 = 0x8001;
 const SENSOR_MSG_RESPONSE: u16 = 0x8002;
 const SENSOR_MSG_BATCH: u16 = 0x8003;
 
+// ── Input message IDs (aap_protobuf InputMessageId) ───────────────────────────
+/// Phone → HU: key-binding request. openauto starts emitting touch/key
+/// `InputReport`s only after it receives this; an empty keycode list is
+/// accepted (no hard keys requested, touchscreen still enabled).
+const INPUT_MSG_BINDING_REQUEST: u16 = 0x8002;
+
 // ── Media message IDs (MediaMessageId.proto) ──────────────────────────────────
 const MEDIA_MSG_SETUP: u16 = 0x8000;
 const MEDIA_MSG_START: u16 = 0x8001;
@@ -314,6 +320,19 @@ impl<T: Transport> Connection<T> {
                 let frame = build_data_frame(channel, MEDIA_MSG_SETUP, body);
                 self.transport.send_frame(frame).await?;
             }
+        }
+
+        // ── Input channel ────────────────────────────────────────────────────
+        if has(ChannelId::InputSource.as_u8() as u32) {
+            info!("input: sending key-binding request (enables head-unit touch)");
+            // KeyBindingRequest { repeated int32 keycodes }: empty body =
+            // no hard keys requested; the head unit still streams touch.
+            let frame = build_data_frame(
+                ChannelId::InputSource,
+                INPUT_MSG_BINDING_REQUEST,
+                Bytes::new(),
+            );
+            self.transport.send_frame(frame).await?;
         }
 
         info!("post-channel init complete — entering dispatch loop");

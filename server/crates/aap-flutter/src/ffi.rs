@@ -173,6 +173,51 @@ pub struct FlutterDesktopPixelBuffer {
     pub release_context: *mut c_void,
 }
 
+// ── Pointer events ────────────────────────────────────────────────────────────
+
+/// `FlutterPointerPhase` discriminants (declaration order from the header).
+pub const kCancel: c_int = 0;
+pub const kUp: c_int = 1;
+pub const kDown: c_int = 2;
+pub const kMove: c_int = 3;
+pub const kAdd: c_int = 4;
+pub const kRemove: c_int = 5;
+pub const kHover: c_int = 6;
+
+/// `FlutterPointerSignalKind` — only `None` is used (no scroll/zoom).
+pub const kFlutterPointerSignalKindNone: c_int = 0;
+
+/// `FlutterPointerDeviceKind` discriminants.
+pub const kFlutterPointerDeviceKindMouse: c_int = 1;
+pub const kFlutterPointerDeviceKindTouch: c_int = 2;
+
+/// Mirrors `FlutterPointerEvent` up to `buttons` (every field past
+/// `struct_size` is range-checked by the engine; the trailing
+/// `view_id`/`pan`/`scale`/`rotation` fields default to zero/disabled).
+#[repr(C)]
+pub struct FlutterPointerEvent {
+    /// Must equal `size_of::<FlutterPointerEvent>()`.
+    pub struct_size: usize,
+    /// `FlutterPointerPhase` (`kDown` / `kMove` / `kUp` / …).
+    pub phase: c_int,
+    /// Event time in microseconds (monotonic; engine clock-agnostic).
+    pub timestamp: usize,
+    /// X coordinate in physical pixels.
+    pub x: f64,
+    /// Y coordinate in physical pixels.
+    pub y: f64,
+    /// Device id (distinguishes simultaneous pointers).
+    pub device: i32,
+    /// `FlutterPointerSignalKind`.
+    pub signal_kind: c_int,
+    pub scroll_delta_x: f64,
+    pub scroll_delta_y: f64,
+    /// `FlutterPointerDeviceKind` — `kFlutterPointerDeviceKindTouch`.
+    pub device_kind: c_int,
+    /// Pressed mouse buttons; 0 for touch.
+    pub buttons: i64,
+}
+
 // ── Engine entry points ───────────────────────────────────────────────────────
 
 unsafe extern "C" {
@@ -190,6 +235,15 @@ unsafe extern "C" {
 
     /// Shut down the engine and release all resources.
     pub fn FlutterEngineShutdown(engine: FlutterEngine) -> FlutterEngineResult;
+
+    /// Send `events_count` pointer events to the engine.
+    ///
+    /// Thread-safe per the embedder contract (callable from any thread).
+    pub fn FlutterEngineSendPointerEvent(
+        engine: FlutterEngine,
+        events: *const FlutterPointerEvent,
+        events_count: usize,
+    ) -> FlutterEngineResult;
 
     /// Notify the engine of the render-surface size.
     ///
