@@ -50,8 +50,16 @@ def _check_submodules() -> None:
         ["git", "-C", str(REPO_ROOT), "submodule", "status"],
         capture_output=True, text=True, check=True,
     )
-    if any(line.startswith("-") for line in result.stdout.splitlines()):
-        _run(["git", "-C", str(REPO_ROOT), "submodule", "update", "--init", "--recursive"])
+    # A leading '-' marks an uninitialized submodule, '+' a checked-out commit
+    # that differs from the one recorded. Either way we (re)sync. The update
+    # is idempotent and cheap when everything is already in place, so run it
+    # unconditionally rather than relying on the status prefix heuristic.
+    needs_work = any(
+        line and line[0] in "-+" for line in result.stdout.splitlines()
+    )
+    _run(["git", "-C", str(REPO_ROOT), "submodule", "update", "--init", "--recursive"])
+    if needs_work:
+        print("  Submodules synced.", file=sys.stderr)
     else:
         print("  Submodules OK.", file=sys.stderr)
 
