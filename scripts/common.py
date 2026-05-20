@@ -167,7 +167,7 @@ def assign_board_ip(check: bool = False) -> int:
     With *check* only reports the current state. Returns 0 on success /
     nothing to do, non-zero on error.
     """
-    ip = "10.55.0.2"
+    ip = os.environ.get("LAPTOP_HOST", "10.55.0.2").strip()
     mask = "24"
     mac = (os.environ.get("BOARD_MAC") or "").strip()
     if not mac:
