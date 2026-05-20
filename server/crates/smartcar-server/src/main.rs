@@ -96,11 +96,55 @@ struct Args {
     bridge_addr: String,
 }
 
+/// Per-event flushing writer for `tracing-subscriber`.
+///
+/// `tracing-subscriber::fmt`'s default writer is `io::stdout()`, which on
+/// Linux is a `LineWriter` over the stdout fd: it flushes on the `'\n'` at
+/// the end of each event. *In normal operation* that's already per-line
+/// durable. But when running on the board off USB-car-mode Vbus, a power
+/// cut can come between the formatter's intra-event writes (timestamp →
+/// level → target → message): the not-yet-newline pieces sit in the
+/// LineWriter's small internal buffer and vanish with the process.
+///
+/// `FlushingStdout` forces a `flush()` after every `write` so each chunk
+/// reaches the kernel pipe to journald immediately. The 0-vs-20-lines
+/// python test on the board confirmed this is exactly the mechanism that
+/// preserves data through a SIGKILL/Vbus-loss.
+struct FlushingStdout;
+
+impl std::io::Write for FlushingStdout {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut h = std::io::stdout().lock();
+        let n = h.write(buf)?;
+        h.flush()?;
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        std::io::stdout().lock().flush()
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for FlushingStdout {
+    type Writer = FlushingStdout;
+    fn make_writer(&'a self) -> Self::Writer {
+        FlushingStdout
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(FlushingStdout)
         .init();
+
+    // First log line of the binary. With per-event flushing installed above,
+    // even a Vbus cut immediately after this returns leaves "smartcar-server
+    // starting" on disk — concrete proof the binary executed past `main()`'s
+    // tracing init. If the next car attempt's journal has *nothing* from this
+    // unit even with the flushing writer, the failure is upstream of `main()`
+    // (binary not exec'd, or killed before tracing_subscriber initialized).
+    tracing::info!(pid = std::process::id(), "smartcar-server: starting");
 
     let args = Args::parse();
 
