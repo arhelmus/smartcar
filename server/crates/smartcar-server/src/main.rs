@@ -135,28 +135,72 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for FlushingStdout {
 /// Flight-recorder checkpoint that bypasses tracing/journald entirely.
 ///
 /// Appends `step` (with the current PID and a monotonic-ish timestamp)
-/// directly to `/var/log/smartcar-boot.log` and `fsync`s before returning.
+/// directly to a persistent log file and `fsync`s before returning.
 /// Used to pin down at which point in `main()` the binary dies on car-mode
 /// boots — journald goes through systemd's stdout pipe and may lose data
 /// across a Vbus cut, but a direct `sync_all` on a real file is the most
 /// durable thing we can do from userspace.
 ///
+/// **Path matters**: on the board, `/var/log` is `zram1` (RAM-backed
+/// tmpfs that evaporates on power cut) and `/var/log.hdd` is the
+/// persistent eMMC mount that survives.  We try the `.hdd` path first
+/// so this works on the board, and fall back to the conventional
+/// `/var/log` for dev hosts / containers that don't have that layout.
+///
 /// Errors are intentionally swallowed: this is a diagnostic side-channel,
 /// not a load-bearing operation.
 fn flight_log(step: &str) {
     use std::io::Write;
+    use std::sync::OnceLock;
+    // PPID via libc; lets us tell at a glance which process launched us
+    // (systemd=1, a shell, a `systemd-run` transient unit, …).
+    unsafe extern "C" {
+        fn getppid() -> i32;
+    }
     let pid = std::process::id();
+    let ppid = unsafe { getppid() };
     let elapsed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0);
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/var/log/smartcar-boot.log")
-    {
-        let _ = writeln!(f, "{elapsed:.3}  pid={pid}  {step}");
-        let _ = f.sync_all();
+
+    // First flight_log() call in this process writes a separator that
+    // delimits each run in the persistent log. Without it, the board's
+    // fake-hwclock (no RTC) gives every boot the same restored wall-clock
+    // start time, and rapid car-mode reboot loops produce a single file
+    // with PID/timestamp orderings that look like parallel processes
+    // (they aren't — they're sequential boots). `boot_id` is the only
+    // value that genuinely changes across kernel reboots, so it's the
+    // right primary key.
+    static SEPARATOR_WRITTEN: OnceLock<()> = OnceLock::new();
+    let is_first_call = SEPARATOR_WRITTEN.set(()).is_ok();
+    let boot_id = if is_first_call {
+        std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "<no-boot-id>".to_string())
+    } else {
+        String::new()
+    };
+
+    for path in [
+        "/var/log.hdd/smartcar-boot.log",
+        "/var/log/smartcar-boot.log",
+    ] {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            if is_first_call {
+                let _ = writeln!(
+                    f,
+                    "\n=== process start  pid={pid} ppid={ppid} t={elapsed:.3} boot_id={boot_id} ==="
+                );
+            }
+            let _ = writeln!(f, "{elapsed:.3}  pid={pid} ppid={ppid}  {step}");
+            let _ = f.sync_all();
+            return;
+        }
     }
 }
 

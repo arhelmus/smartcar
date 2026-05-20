@@ -46,6 +46,38 @@ fn flush_logs() {
     let _ = std::io::stdout().lock().flush();
 }
 
+/// Flight-recorder checkpoint that bypasses tracing/journald entirely.
+///
+/// Mirrors `smartcar-server`'s `flight_log` so the gadget bring-up phase
+/// can be traced through a Vbus cut. Writes are append+`fsync` to a
+/// persistent disk path; on the board `/var/log` is zram (volatile) and
+/// the real disk is `/var/log.hdd`, so we try the latter first.
+///
+/// Best-effort: errors are swallowed (this is a diagnostic side-channel).
+fn flight_log(step: &str) {
+    use std::io::Write as _;
+    let pid = std::process::id();
+    let ppid = unsafe { libc::getppid() };
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    for path in [
+        "/var/log.hdd/smartcar-boot.log",
+        "/var/log/smartcar-boot.log",
+    ] {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = writeln!(f, "{elapsed:.3}  pid={pid} ppid={ppid}  usb: {step}");
+            let _ = f.sync_all();
+            return;
+        }
+    }
+}
+
 fn write_attr(path: impl AsRef<Path>, value: &str) -> io::Result<()> {
     let path = path.as_ref();
     debug!(path = %path.display(), value = %value.trim_end(), "configfs write");
@@ -145,9 +177,11 @@ impl Drop for GadgetHandle {
 ///
 /// **Blocking**: must be called from a blocking thread (e.g. `spawn_blocking`).
 pub fn run_handshake() -> io::Result<(GadgetHandle, fs::File, fs::File)> {
+    flight_log("run_handshake: entered");
     // ── Accessory gadget — EP1 IN + EP2 OUT ───────────────────────────────
     info!("USB: setting up accessory gadget ({GADGET_ACC}) — skip-handshake");
     setup_gadget(GADGET_ACC, 0x18d1, 0x2d00, FFS_MOUNT_ACC)?;
+    flight_log("run_handshake: setup_gadget done");
     let acc_guard = GadgetHandle {
         gadget_name: GADGET_ACC.to_owned(),
         ffs_mount: FFS_MOUNT_ACC.to_owned(),
@@ -158,9 +192,11 @@ pub fn run_handshake() -> io::Result<(GadgetHandle, fs::File, fs::File)> {
         FFS_MOUNT_ACC,
         &descriptors::accessory_descriptors(),
     )?;
+    flight_log("run_handshake: write_and_enable done (UDC bound, host can see us)");
 
     info!("USB: waiting for host to enumerate accessory gadget");
     wait_for_enable(&mut ep0_acc)?;
+    flight_log("run_handshake: wait_for_enable returned (FUNCTIONFS_ENABLE received)");
     drop(ep0_acc);
     info!("USB: host enumerated; opening bulk endpoints");
 
@@ -175,6 +211,7 @@ pub fn run_handshake() -> io::Result<(GadgetHandle, fs::File, fs::File)> {
     // transport. Anything that happens after this is governed by the bulk
     // flow's own per-frame logs.
     flush_logs();
+    flight_log("run_handshake: ep1/ep2 open, returning Ok");
     Ok((acc_guard, ep1, ep2))
 }
 
@@ -193,19 +230,23 @@ fn setup_gadget(name: &str, vid: u16, pid: u16, ffs_mount: &str) -> io::Result<(
         "USB: configuring gadget"
     );
     let g = format!("{CONFIGFS_ROOT}/{name}");
+    flight_log("setup_gadget: entered");
 
     // Gadget root and device-level attributes.
     mkdir(&g)?;
+    flight_log("setup_gadget: gadget root mkdir done");
     write_attr(format!("{g}/idVendor"), &format!("0x{vid:04x}\n"))?;
     write_attr(format!("{g}/idProduct"), &format!("0x{pid:04x}\n"))?;
     write_attr(format!("{g}/bcdUSB"), "0x0200\n")?;
     write_attr(format!("{g}/bcdDevice"), "0x0100\n")?;
+    flight_log("setup_gadget: device-level attrs (VID/PID/bcd*) written");
 
     // Language strings.
     mkdir(format!("{g}/strings/0x409"))?;
     write_attr(format!("{g}/strings/0x409/manufacturer"), MANUFACTURER)?;
     write_attr(format!("{g}/strings/0x409/product"), PRODUCT)?;
     write_attr(format!("{g}/strings/0x409/serialnumber"), SERIAL)?;
+    flight_log("setup_gadget: lang strings 0x409 written");
 
     // Configuration.
     mkdir(format!("{g}/configs/c.1/strings/0x409"))?;
@@ -214,9 +255,13 @@ fn setup_gadget(name: &str, vid: u16, pid: u16, ffs_mount: &str) -> io::Result<(
         "Config\n",
     )?;
     write_attr(format!("{g}/configs/c.1/MaxPower"), "500\n")?;
+    flight_log("setup_gadget: config c.1 written");
 
     // FunctionFS function (must exist before mount).
     mkdir(format!("{g}/functions/ffs.{name}"))?;
+    flight_log("setup_gadget: ffs function dir created");
+
+    flight_log("setup_gadget: configfs hierarchy written");
 
     // Mount FunctionFS — this creates ep0 in the mount directory.
     mkdir(ffs_mount)?;
@@ -230,12 +275,18 @@ fn setup_gadget(name: &str, vid: u16, pid: u16, ffs_mount: &str) -> io::Result<(
         .output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        flight_log(&format!(
+            "setup_gadget: mount -t functionfs FAILED status={} stderr={}",
+            output.status,
+            stderr.trim()
+        ));
         return Err(io::Error::other(format!(
             "mount -t functionfs {name} -> {ffs_mount} failed ({}): {}",
             output.status,
             stderr.trim()
         )));
     }
+    flight_log("setup_gadget: FunctionFS mounted");
     debug!("FunctionFS mounted at {ffs_mount}");
     Ok(())
 }
@@ -244,12 +295,15 @@ fn setup_gadget(name: &str, vid: u16, pid: u16, ffs_mount: &str) -> io::Result<(
 ///
 /// Returns the open ep0 file (needed for reading events).
 fn write_and_enable(gadget_name: &str, ffs_mount: &str, descs: &[u8]) -> io::Result<fs::File> {
+    flight_log("write_and_enable: entered");
     let ep0_path = format!("{ffs_mount}/ep0");
     debug!(path = %ep0_path, "opening ep0");
     let mut ep0 = fs::File::options().read(true).write(true).open(&ep0_path)?;
+    flight_log("write_and_enable: ep0 opened");
 
     // Write descriptor blob then strings blob — two separate write(2) calls.
     ep0.write_all(descs).map_err(|e| {
+        flight_log(&format!("write_and_enable: ep0 descs write FAILED: {e}"));
         io::Error::new(
             e.kind(),
             format!("ep0 write descriptors ({} bytes): {e}", descs.len()),
@@ -257,11 +311,13 @@ fn write_and_enable(gadget_name: &str, ffs_mount: &str, descs: &[u8]) -> io::Res
     })?;
     let strs = descriptors::strings();
     ep0.write_all(&strs).map_err(|e| {
+        flight_log(&format!("write_and_enable: ep0 strings write FAILED: {e}"));
         io::Error::new(
             e.kind(),
             format!("ep0 write strings ({} bytes): {e}", strs.len()),
         )
     })?;
+    flight_log("write_and_enable: ep0 descriptors+strings written");
     debug!(
         descs_bytes = descs.len(),
         strings_bytes = strs.len(),
@@ -283,9 +339,11 @@ fn write_and_enable(gadget_name: &str, ffs_mount: &str, descs: &[u8]) -> io::Res
     // an `EINVAL` if anything (VID/PID, descriptor layout, endpoint config)
     // doesn't pass its checks.
     let udc = find_udc()?;
+    flight_log(&format!("write_and_enable: found UDC {udc}, about to bind"));
     info!(gadget = gadget_name, udc = %udc, "USB: binding gadget to UDC");
     let udc_path = format!("{g}/UDC");
     fs::write(&udc_path, format!("{udc}\n")).map_err(|e| {
+        flight_log(&format!("write_and_enable: UDC bind FAILED: {e}"));
         io::Error::new(
             e.kind(),
             format!(
@@ -296,6 +354,7 @@ fn write_and_enable(gadget_name: &str, ffs_mount: &str, descs: &[u8]) -> io::Res
             ),
         )
     })?;
+    flight_log("write_and_enable: UDC bind WRITE returned Ok (host can now see us)");
     info!(gadget = gadget_name, udc = %udc, "USB gadget enabled");
     // CRITICAL: from this point on the host can see us and may yank Vbus at
     // any instant. Push every preceding log line out to journald NOW, while
