@@ -20,19 +20,11 @@ production.
 make init
 ```
 
-## Pre-push checks (`make review`)
+## Review
 
-`make review` runs every check the pre-push git hook runs: `cargo
-fmt / clippy / test / audit`, a cross-compile to `x86_64-unknown-linux-gnu`
-when on non-Linux hosts (catches Linux-only deps like `bluer` /
-`libdbus-sys` that the macOS host build skips), and the Flutter
-`pub get --enforce-lockfile / format / analyze / test` pipeline for both
-`mobile/` and `server/flutter-ui/`. All checks run in parallel.
+The repository has an automated review pipeline that runs on every `git
+push` via the pre-push hook and can also be invoked manually:
 
 ```sh
-make review                       # full run
-make review ARGS=--no-cross       # skip the Docker-backed Linux check
+make review
 ```
-
-The pre-push hook is a thin shim over `scripts/review.py` — anything you
-can pass to the script you can pass via `ARGS=` to the Makefile target.
