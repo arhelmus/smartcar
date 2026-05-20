@@ -43,20 +43,44 @@ to return to dev/Ethernet mode.
 
 ## How it works at boot
 
+The boot is gated so that the *first* USB gadget bound to the UDC matches the
+selected mode — there is no transient state where the host sees `g_ether`
+appear and then disappear. (An earlier revision did exactly that, loaded
+`g_ether` unconditionally at `sysinit` and tore it down later via
+`release-udc.sh`; production car HUs appear to react to the "device removed"
+event by cutting Vbus before our AOAP gadget can come up. See `git log` for
+the rework.)
+
 1. **`usb-mode.service`** runs early. It reads PI16 (`gpiochip1`, line 272) with an internal pull-up via `gpioget`. If the pin is LOW, it creates `/run/usb-car-mode`.
 
-2. **Dev mode** (file absent): `g_ether` stays loaded. `usb0` comes up at `10.55.0.1/24`. SSH works over the USB cable from the laptop.
+2. **`g_ether-load.service`** runs `After=usb-mode.service` with
+   `ConditionPathExists=!/run/usb-car-mode`. In **dev mode** the condition
+   passes and it `modprobe`s `g_ether` — USB-Ethernet comes up, `usb0` gets
+   `10.55.0.1/24`, SSH works over the USB cable. In **car mode** the service
+   is skipped and `g_ether` is **never loaded**; the UDC stays empty.
+   `/etc/modules-load.d/usb-gadget.conf` no longer autoloads `g_ether` at
+   `sysinit` for exactly this reason.
 
-3. **Car mode** (file present): **`smartcar-server.service`** starts. Its `ExecStartPre` runs `release-udc.sh` which calls `modprobe -r g_ether` to free the UDC. Then `smartcar-server --transport usb --bridge ble` runs the AOAP two-persona handshake and claims the UDC via configfs; the BLE GATT bridge to the iOS app comes up in parallel. (The binary's default bridge mode is TCP, suitable for the dev Mac + iOS Simulator — the board unit overrides it.)
+3. **Car mode** (file present): **`smartcar-server.service`** starts. Its
+   `ExecStartPre` runs `release-udc.sh` (kept as belt-and-suspenders; with
+   the new sequence it's a no-op because nothing is bound to the UDC yet).
+   Then `smartcar-server --transport usb --bridge ble` claims the empty UDC
+   via configfs and brings up the AOAP accessory gadget; the BLE GATT bridge
+   to the iOS app comes up in parallel. (The binary's default bridge mode is
+   TCP, suitable for the dev Mac + iOS Simulator — the board unit overrides
+   it.) The car sees a single USB device appear on its bus this boot —
+   never two.
 
 ## Files on the board
 
 | Path | Purpose |
 |---|---|
 | `/usr/local/sbin/usb-mode-select.sh` | Reads GPIO, creates `/run/usb-car-mode` if in car mode |
-| `/usr/local/sbin/release-udc.sh` | Unloads `g_ether` to free the UDC |
+| `/usr/local/sbin/release-udc.sh` | Belt-and-suspenders UDC teardown; no-op with the new boot sequence |
 | `/etc/systemd/system/usb-mode.service` | Oneshot service, runs `usb-mode-select.sh` at boot |
+| `/etc/systemd/system/g_ether-load.service` | Loads `g_ether` only when **not** in car mode (`ConditionPathExists=!/run/usb-car-mode`) |
 | `/etc/systemd/system/smartcar-server.service` | Starts `smartcar-server`, conditional on `/run/usb-car-mode` |
+| `/etc/modules-load.d/usb-gadget.conf` | Intentionally **empty** of `g_ether` — see `g_ether-load.service` |
 | `/etc/modprobe.d/g_ether.conf` | Stable MAC addresses for `usb0` (board: `02:00:00:00:0a:01`, laptop: `02:00:00:00:0a:02`) |
 | `/etc/systemd/network/usb0.network` | Static IP `10.55.0.1/24` on `usb0` |
 | `/usr/local/bin/smartcar-server` | Deployed by `scripts/deploy_board.py` |
@@ -78,14 +102,82 @@ modprobe -r g_ether
 /usr/local/bin/smartcar-server --transport usb
 ```
 
-## Viewing logs in car mode
+## Setup quirks (read before debugging weirdness)
 
-Since SSH over USB is unavailable while in car mode, check logs after switching back to dev mode:
+A grab-bag of board-specific gotchas that have bitten us once and you'd
+otherwise spend hours rediscovering.
+
+### No hardware RTC
+
+The H618 has no battery-backed RTC. The board boots at year 1970 unless
+something restores the time. We use **`fake-hwclock`**:
+
+- The package is installed.  `/etc/fake-hwclock.data` stores the last seen
+  wall time; the **`fake-hwclock-load.service`** restores it at early boot
+  (this is the split-service form on modern Debian).
+- The **monolithic `fake-hwclock.service` is intentionally masked** — it's
+  superseded by the split `fake-hwclock-load.service` + `-save.service` pair.
+  Don't unmask it.
+- To force a sync to current time (e.g. before a car trip):
+  `date -u -s '<UTC time>' && fake-hwclock save`
+- The wall clock matters for TLS certificate validity windows — a 1970
+  clock will make any cert "not yet valid". Sync before driving.
+
+### Journal persistence and aggressive flushing
+
+`/var/log/journal → /var/log.hdd/journal` makes the systemd journal
+persistent. `/etc/systemd/journald.conf` is tuned for **debugging unclean
+power-loss in the car**:
+
+- `Storage=auto` + `/var/log/journal` present ⇒ persistent.
+- `SystemMaxUse=500M` — large enough to capture a long drive at debug level.
+- **`SyncIntervalSec=0`** — every log line is `fsync`'d on write. Tiny
+  perf cost; the difference between knowing why the car rejected us and
+  finding a 1-second truncated boot in `--list-boots`.
+
+Past-boot retrieval (boot IDs are stable even if timestamps are off):
 
 ```bash
-journalctl -u smartcar-server -n 100
-journalctl -u usb-mode -n 20
+journalctl --list-boots                      # find the trip's boot index
+journalctl -u smartcar-server -b -1          # previous-boot session
+journalctl -u usb-mode -b -1                 # was CAR mode triggered?
+journalctl -t release-udc -b -1              # did the UDC actually free?
+journalctl -k -b -1 | grep -iE 'musb|gadget|udc'  # kernel-side gadget log
 ```
+
+### `release-udc.sh`
+
+The MUSB UDC can be held by **(a)** an already-bound configfs gadget,
+**(b)** `g_ether`, or **(c)** its sub-modules (`usb_f_ecm`, `usb_f_rndis`,
+`libcomposite`). `release-udc.sh` tears down all three in order, verifies
+each UDC's `state` ends up `not-attached`, and **exits non-zero** if any
+UDC is still busy. Combined with `Restart=on-failure` on
+`smartcar-server.service`, that means a stuck UDC surfaces in the journal
+instead of silently never connecting. (With the new boot ordering this
+script is mostly a no-op in car mode — kept as belt-and-suspenders.)
+
+### Car HU compatibility — USB descriptors
+
+Real car head units **whitelist specific USB Vendor IDs**. Production AA
+phones use Google's VID `0x18d1`; the openauto/aap-server historical
+default of Huawei `0x12d1:0x107e` is rejected as "unsupported USB device"
+by at least one HU we've tested.
+
+We currently impersonate **Google `0x18d1:0x2d00`** (AOAP accessory)
+directly with `Manufacturer="Google"`, `Product="Pixel 8 Pro"`. Because
+`0x2d00` *is* the accessory persona, **we skip the AOAP mode-switch
+handshake on the initial gadget** (no `12d1:107e` → `18d1:2d00`
+re-enumeration). If you hit an HU that *requires* seeing the
+mode-switch (some firmware does), the strings in
+`server/crates/aap-transport/src/usb/gadget.rs` are the place to tweak —
+revert to `0x18d1:0x4ee1` (Pixel MTP) and re-enable `wait_for_aoap`.
+
+### `smartcar-server.service` directive placement
+
+`StartLimitIntervalSec` and `StartLimitBurst` belong in the **`[Unit]`**
+section, not `[Service]`. systemd silently ignores them otherwise and
+restart-burst protection is off. (We've made this mistake; the fix is in
+the deployed unit file.)
 
 ## Bluetooth — phone connectivity (planned)
 
@@ -124,3 +216,16 @@ CoreBluetooth is **BLE-only**. Third-party iOS apps cannot trigger BR/EDR pairin
 ### Coexistence note
 
 BR/EDR audio occupies a slice of the 2.4 GHz band, but the GATT control plane is ~100 B/s of protobuf, well below where scheduling jitter would show up. WiFi on the same antenna can lose packets during heavy A2DP traffic — moving WiFi to 5 GHz on the combo module mitigates this. No tuning needed for the GATT path alone.
+
+## Viewing logs in car mode
+
+SSH over USB-Ethernet is unavailable while in car mode. After the drive,
+remove the jumper, reboot into dev mode, then read the previous boot:
+
+```bash
+ssh root@10.55.0.1 'journalctl -u smartcar-server -b -1 --no-pager' > car-trip.log
+```
+
+The full debug filter (`RUST_LOG=info,aap_core=debug,aap_audio=debug,
+aap_transport=debug`) is baked into the unit; expect handshake/audio/
+transport detail.
