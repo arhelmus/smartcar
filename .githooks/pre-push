@@ -29,7 +29,12 @@ AUDIT_PID=$!
 # to x86_64-unknown-linux-gnu via `cross` (needs Docker running).
 CROSS_PID=""
 if [[ "$(uname)" != "Linux" ]]; then
-    (cd "$REPO_ROOT/server" && cross check --workspace --target x86_64-unknown-linux-gnu) \
+    # The cross-rs image is amd64-only; pin the Docker platform so Apple
+    # Silicon hosts don't try to pull a non-existent arm64 manifest. Same
+    # workaround scripts/common.py uses for the board cross-build.
+    (cd "$REPO_ROOT/server" \
+        && DOCKER_DEFAULT_PLATFORM=linux/amd64 \
+           cross check --workspace --target x86_64-unknown-linux-gnu) \
         >"$LOGDIR/.cross.log" 2>&1 &
     CROSS_PID=$!
 fi
