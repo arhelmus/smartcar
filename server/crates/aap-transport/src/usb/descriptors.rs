@@ -29,6 +29,10 @@ const USB_DT_ENDPOINT: u8 = 5;
 ///
 /// No data endpoints — only ep0 for control.  Uses `FUNCTIONFS_ALL_CTRL_RECIP`
 /// so FunctionFS ep0 receives the device-directed AOAP vendor requests 51/52/53.
+///
+/// Unused by the current skip-handshake `run_handshake`; kept for HUs that
+/// require seeing the two-persona AOAP mode-switch.
+#[allow(dead_code)]
 pub fn initial_descriptors() -> Vec<u8> {
     let intf = interface_descriptor(0);
     descriptor_blob(

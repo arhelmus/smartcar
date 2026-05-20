@@ -37,6 +37,15 @@ const READ_CHUNK: usize = 16_384;
 /// Maximum decrypted payload we allocate in one shot (same as TcpTransport).
 const MAX_PLAIN_BUF: usize = 65_536;
 
+/// Force `tracing-subscriber`'s default stdout writer to commit any buffered
+/// log lines to the pipe to journald. Call at risky moments (gadget bring-up
+/// boundaries) so a sudden Vbus loss doesn't take the previous `info!()` line
+/// with it.
+fn flush_stdout() {
+    use std::io::Write;
+    let _ = std::io::stdout().lock().flush();
+}
+
 // ── Reassembly ────────────────────────────────────────────────────────────────
 
 struct ReassemblyBuf {
@@ -61,6 +70,11 @@ pub struct UsbTransport {
     tls: Option<TlsSession>,
     /// Keeps the accessory gadget alive until the transport is dropped.
     _gadget: gadget::GadgetHandle,
+    /// Logged once at info level when the first ep2 read returns bytes — that's
+    /// the moment the head unit transitions from "enumerated us" to "actually
+    /// speaking the AA protocol". Silence after `bulk endpoints open` is the
+    /// usual sign the HU rejected us at the USB layer.
+    first_read_logged: bool,
 }
 
 impl UsbTransport {
@@ -71,16 +85,30 @@ impl UsbTransport {
     /// accessory gadget and the bulk endpoints are open.
     pub async fn connect() -> Result<Self, TransportError> {
         info!("USB transport: starting AOAP handshake");
+        flush_stdout();
 
-        let (guard, ep1_std, ep2_std) = tokio::task::spawn_blocking(gadget::run_handshake)
+        let (guard, ep1_std, ep2_std) = match tokio::task::spawn_blocking(gadget::run_handshake)
             .await
             .map_err(|e| TransportError::Io(std::io::Error::other(e)))?
-            .map_err(TransportError::Io)?;
+        {
+            Ok(triple) => triple,
+            Err(e) => {
+                // Gadget bring-up errored; flush so the per-step logs from
+                // run_handshake reach disk before we propagate the error.
+                flush_stdout();
+                return Err(TransportError::Io(e));
+            }
+        };
 
         let ep1_tx = tokio::fs::File::from_std(ep1_std);
         let ep2_rx = tokio::fs::File::from_std(ep2_std);
 
-        info!("USB transport: bulk endpoints open — ready");
+        info!(
+            "USB transport: bulk endpoints (EP1 IN, EP2 OUT) open — \
+             awaiting first inbound bytes from head unit on EP2"
+        );
+        // Final sync point before we're at the mercy of the head unit's I/O.
+        flush_stdout();
         Ok(Self {
             ep1_tx,
             ep2_rx,
@@ -88,6 +116,7 @@ impl UsbTransport {
             reassembly: HashMap::new(),
             tls: None,
             _gadget: guard,
+            first_read_logged: false,
         })
     }
 
@@ -98,6 +127,13 @@ impl UsbTransport {
         let n = self.ep2_rx.read_buf(&mut self.read_buf).await?;
         if n == 0 {
             return Err(TransportError::Closed);
+        }
+        if !self.first_read_logged {
+            info!(
+                bytes = n,
+                "USB: first inbound bytes received on EP2 — head unit is talking to us"
+            );
+            self.first_read_logged = true;
         }
         debug!(bytes = n, "read bytes from ep2");
         Ok(())
@@ -210,7 +246,9 @@ impl UsbTransport {
         let frame = Frame::control_bulk(ChannelId::Control, payload.freeze());
         let mut buf = BytesMut::new();
         encode_frame(&frame, None, &mut buf);
+        let n = buf.len();
         self.ep1_tx.write_all(&buf).await?;
+        debug!(bytes = n, "ep1 wrote SSL frame");
         Ok(())
     }
 }
@@ -249,7 +287,14 @@ impl Transport for UsbTransport {
 
         let mut buf = BytesMut::new();
         encode_frame(&out, total_size, &mut buf);
+        let n = buf.len();
         self.ep1_tx.write_all(&buf).await?;
+        debug!(
+            bytes = n,
+            channel = ?out.channel,
+            encrypted = out.flags.contains(FrameFlags::ENCRYPTED),
+            "ep1 wrote frame"
+        );
         Ok(())
     }
 

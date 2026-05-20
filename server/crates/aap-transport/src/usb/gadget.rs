@@ -18,24 +18,72 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::process::Command;
+use std::time::Instant;
 
 use tracing::{debug, info, warn};
 
 use super::descriptors;
 
+// ── Logging helpers ──────────────────────────────────────────────────────────
+//
+// configfs writes are the most common silent-failure source in this module.
+// Every `os error 22 (Invalid argument)` you've ever stared at started life as
+// a single fs::write whose error message dropped the path. `write_attr` keeps
+// the path in the error, so the journal line tells you exactly which sysfs
+// node the kernel rejected.
+//
+// `flush_logs` forces the stdout BufWriter that tracing-subscriber writes into
+// out to the journald pipe. The car kills Vbus the instant it dislikes our
+// USB descriptor; without explicit flushes, the lines describing what we just
+// tried to advertise sit in userspace memory and vanish with the process.
+// We call it at the *risky moments* — right after each step that could be the
+// last one the board ever executes.
+fn flush_logs() {
+    use std::io::Write;
+    // stdout is the tracing-subscriber default writer (block-buffered when
+    // piped to journald). stderr is unbuffered already; flushing it is a
+    // no-op but harmless.
+    let _ = std::io::stdout().lock().flush();
+}
+
+fn write_attr(path: impl AsRef<Path>, value: &str) -> io::Result<()> {
+    let path = path.as_ref();
+    debug!(path = %path.display(), value = %value.trim_end(), "configfs write");
+    fs::write(path, value)
+        .map_err(|e| io::Error::new(e.kind(), format!("configfs write {}: {e}", path.display())))
+}
+
+fn mkdir(path: impl AsRef<Path>) -> io::Result<()> {
+    let path = path.as_ref();
+    debug!(path = %path.display(), "configfs mkdir");
+    fs::create_dir_all(path)
+        .map_err(|e| io::Error::new(e.kind(), format!("configfs mkdir {}: {e}", path.display())))
+}
+
 // ── Gadget identity ───────────────────────────────────────────────────────────
 
 const CONFIGFS_ROOT: &str = "/sys/kernel/config/usb_gadget";
 
+#[allow(dead_code)] // Phase-1 (two-persona AOAP) gadget name; see `run_handshake` doc.
 const GADGET_INIT: &str = "aap-init";
 const GADGET_ACC: &str = "aap";
 
+#[allow(dead_code)] // Phase-1 (two-persona AOAP) FunctionFS mount; see `run_handshake` doc.
 const FFS_MOUNT_INIT: &str = "/dev/ffs-aap-init";
 const FFS_MOUNT_ACC: &str = "/dev/ffs-aap";
 
-const MANUFACTURER: &str = "TAG";
-const PRODUCT: &str = "AAServer";
-const SERIAL: &str = "TAGAAS";
+// USB descriptor strings the head unit reads when enumerating the gadget.
+// We impersonate a Google Pixel so HUs that whitelist on VID + manufacturer
+// strings (factory firmware in real cars) accept the connection. A previous
+// revision used the openauto/aap-server historical Huawei IDs
+// (`0x12d1:0x107e`); at least one production HU rejected that as
+// "unsupported USB device" without even probing for AOAP.
+//
+// Current strategy: skip the two-persona AOAP handshake entirely and present
+// the accessory persona (0x18d1:0x2d00) directly — see `run_handshake`.
+const MANUFACTURER: &str = "Google";
+const PRODUCT: &str = "Pixel 8 Pro";
+const SERIAL: &str = "AKDPV1234567";
 
 // ── FunctionFS ep0 event constants (linux/usb/functionfs.h) ──────────────────
 
@@ -45,8 +93,14 @@ const FUNCTIONFS_SETUP: u8 = 4;
 
 // ── AOAP control-transfer request codes ──────────────────────────────────────
 
+// AOAP vendor request codes — only the two-persona flow (`wait_for_aoap`)
+// consumes these.  The skip-handshake variant in `run_handshake` doesn't
+// touch them.
+#[allow(dead_code)]
 const AOAP_GET_PROTOCOL: u8 = 51;
+#[allow(dead_code)]
 const AOAP_SEND_STRING: u8 = 52;
+#[allow(dead_code)]
 const AOAP_START_ACCESSORY: u8 = 53;
 
 // ── GadgetHandle ─────────────────────────────────────────────────────────────
@@ -68,7 +122,21 @@ impl Drop for GadgetHandle {
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
-/// Run the full two-persona AOAP handshake and return the open bulk endpoints.
+/// Bring up the AOAP accessory gadget and return the open bulk endpoints.
+///
+/// **Skip-handshake variant.** Production car HUs whitelist Google's
+/// VID (`0x18d1`) and reject the Huawei initial-gadget ID
+/// (`0x12d1:0x107e`) as "unsupported USB device" without ever probing
+/// for AOAP. We therefore skip the two-persona dance entirely and
+/// present `0x18d1:0x2d00` (Google AOAP accessory) directly; the HU
+/// recognizes the accessory persona on first sight, no mode-switch
+/// control transfers needed.
+///
+/// If you hit a HU that *requires* the mode-switch handshake, revert to
+/// the two-persona flow: re-add the `setup_gadget(GADGET_INIT,
+/// 0x18d1, 0x4ee1, …)` + `wait_for_aoap()` calls — both still live in
+/// this module (marked `#[allow(dead_code)]`) — and drop the initial
+/// gadget before this Phase-2 block.
 ///
 /// Returns `(gadget_guard, ep1_tx, ep2_rx)` where:
 /// - `gadget_guard` — keeps the accessory gadget alive; drop it to disable USB.
@@ -77,30 +145,8 @@ impl Drop for GadgetHandle {
 ///
 /// **Blocking**: must be called from a blocking thread (e.g. `spawn_blocking`).
 pub fn run_handshake() -> io::Result<(GadgetHandle, fs::File, fs::File)> {
-    // ── Phase 1: initial gadget — ep0 only, receives AOAP requests ────────
-    info!("USB: setting up initial gadget ({GADGET_INIT})");
-    setup_gadget(GADGET_INIT, 0x12d1, 0x107e, FFS_MOUNT_INIT)?;
-    let init_guard = GadgetHandle {
-        gadget_name: GADGET_INIT.to_owned(),
-        ffs_mount: FFS_MOUNT_INIT.to_owned(),
-    };
-
-    let mut ep0 = write_and_enable(
-        GADGET_INIT,
-        FFS_MOUNT_INIT,
-        &descriptors::initial_descriptors(),
-    )?;
-
-    info!("USB: waiting for AOAP handshake from host");
-    wait_for_aoap(&mut ep0)?;
-    info!("USB: AOAP handshake done; switching to accessory persona");
-
-    // Close ep0 before tearing down the mount, then drop the guard.
-    drop(ep0);
-    drop(init_guard);
-
-    // ── Phase 2: accessory gadget — EP1 IN + EP2 OUT ─────────────────────
-    info!("USB: setting up accessory gadget ({GADGET_ACC})");
+    // ── Accessory gadget — EP1 IN + EP2 OUT ───────────────────────────────
+    info!("USB: setting up accessory gadget ({GADGET_ACC}) — skip-handshake");
     setup_gadget(GADGET_ACC, 0x18d1, 0x2d00, FFS_MOUNT_ACC)?;
     let acc_guard = GadgetHandle {
         gadget_name: GADGET_ACC.to_owned(),
@@ -125,6 +171,10 @@ pub fn run_handshake() -> io::Result<(GadgetHandle, fs::File, fs::File)> {
         .read(true)
         .open(format!("{FFS_MOUNT_ACC}/ep2"))?;
 
+    // Last sync point before handing the bulk endpoints back to the async
+    // transport. Anything that happens after this is governed by the bulk
+    // flow's own per-frame logs.
+    flush_logs();
     Ok((acc_guard, ep1, ep2))
 }
 
@@ -132,43 +182,60 @@ pub fn run_handshake() -> io::Result<(GadgetHandle, fs::File, fs::File)> {
 
 /// Create the configfs gadget hierarchy and mount FunctionFS.
 fn setup_gadget(name: &str, vid: u16, pid: u16, ffs_mount: &str) -> io::Result<()> {
+    info!(
+        gadget = name,
+        vid = format!("0x{vid:04x}"),
+        pid = format!("0x{pid:04x}"),
+        manufacturer = MANUFACTURER,
+        product = PRODUCT,
+        serial = SERIAL,
+        ffs_mount,
+        "USB: configuring gadget"
+    );
     let g = format!("{CONFIGFS_ROOT}/{name}");
 
     // Gadget root and device-level attributes.
-    fs::create_dir_all(&g)?;
-    fs::write(format!("{g}/idVendor"), format!("0x{vid:04x}\n"))?;
-    fs::write(format!("{g}/idProduct"), format!("0x{pid:04x}\n"))?;
-    fs::write(format!("{g}/bcdUSB"), "0x0200\n")?;
-    fs::write(format!("{g}/bcdDevice"), "0x0100\n")?;
+    mkdir(&g)?;
+    write_attr(format!("{g}/idVendor"), &format!("0x{vid:04x}\n"))?;
+    write_attr(format!("{g}/idProduct"), &format!("0x{pid:04x}\n"))?;
+    write_attr(format!("{g}/bcdUSB"), "0x0200\n")?;
+    write_attr(format!("{g}/bcdDevice"), "0x0100\n")?;
 
     // Language strings.
-    fs::create_dir_all(format!("{g}/strings/0x409"))?;
-    fs::write(format!("{g}/strings/0x409/manufacturer"), MANUFACTURER)?;
-    fs::write(format!("{g}/strings/0x409/product"), PRODUCT)?;
-    fs::write(format!("{g}/strings/0x409/serialnumber"), SERIAL)?;
+    mkdir(format!("{g}/strings/0x409"))?;
+    write_attr(format!("{g}/strings/0x409/manufacturer"), MANUFACTURER)?;
+    write_attr(format!("{g}/strings/0x409/product"), PRODUCT)?;
+    write_attr(format!("{g}/strings/0x409/serialnumber"), SERIAL)?;
 
     // Configuration.
-    fs::create_dir_all(format!("{g}/configs/c.1/strings/0x409"))?;
-    fs::write(
+    mkdir(format!("{g}/configs/c.1/strings/0x409"))?;
+    write_attr(
         format!("{g}/configs/c.1/strings/0x409/configuration"),
         "Config\n",
     )?;
-    fs::write(format!("{g}/configs/c.1/MaxPower"), "500\n")?;
+    write_attr(format!("{g}/configs/c.1/MaxPower"), "500\n")?;
 
     // FunctionFS function (must exist before mount).
-    fs::create_dir_all(format!("{g}/functions/ffs.{name}"))?;
+    mkdir(format!("{g}/functions/ffs.{name}"))?;
 
     // Mount FunctionFS — this creates ep0 in the mount directory.
-    fs::create_dir_all(ffs_mount)?;
-    let status = Command::new("mount")
+    mkdir(ffs_mount)?;
+    info!(
+        source = name,
+        target = ffs_mount,
+        "USB: mounting FunctionFS"
+    );
+    let output = Command::new("mount")
         .args(["-t", "functionfs", name, ffs_mount])
-        .status()?;
-    if !status.success() {
+        .output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(io::Error::other(format!(
-            "mount functionfs {name} → {ffs_mount} failed: {status}"
+            "mount -t functionfs {name} -> {ffs_mount} failed ({}): {}",
+            output.status,
+            stderr.trim()
         )));
     }
-
     debug!("FunctionFS mounted at {ffs_mount}");
     Ok(())
 }
@@ -178,25 +245,62 @@ fn setup_gadget(name: &str, vid: u16, pid: u16, ffs_mount: &str) -> io::Result<(
 /// Returns the open ep0 file (needed for reading events).
 fn write_and_enable(gadget_name: &str, ffs_mount: &str, descs: &[u8]) -> io::Result<fs::File> {
     let ep0_path = format!("{ffs_mount}/ep0");
+    debug!(path = %ep0_path, "opening ep0");
     let mut ep0 = fs::File::options().read(true).write(true).open(&ep0_path)?;
 
     // Write descriptor blob then strings blob — two separate write(2) calls.
-    ep0.write_all(descs)?;
-    ep0.write_all(&descriptors::strings())?;
-    debug!("FunctionFS descriptors written to {ep0_path}");
+    ep0.write_all(descs).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("ep0 write descriptors ({} bytes): {e}", descs.len()),
+        )
+    })?;
+    let strs = descriptors::strings();
+    ep0.write_all(&strs).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!("ep0 write strings ({} bytes): {e}", strs.len()),
+        )
+    })?;
+    debug!(
+        descs_bytes = descs.len(),
+        strings_bytes = strs.len(),
+        "FunctionFS descriptors written to {ep0_path}"
+    );
 
     // Symlink function into config AFTER descriptors are written.
     let g = format!("{CONFIGFS_ROOT}/{gadget_name}");
     let src = format!("{g}/functions/ffs.{gadget_name}");
     let dst = format!("{g}/configs/c.1/ffs.{gadget_name}");
     if !Path::new(&dst).exists() {
-        std::os::unix::fs::symlink(&src, &dst)?;
+        debug!(src = %src, dst = %dst, "symlink function into config");
+        std::os::unix::fs::symlink(&src, &dst)
+            .map_err(|e| io::Error::new(e.kind(), format!("symlink {src} -> {dst}: {e}")))?;
     }
 
-    // Enable gadget by binding to the first available UDC.
+    // Enable gadget by binding to the first available UDC. This is THE most
+    // common car-failure point: the kernel rejects the descriptor here with
+    // an `EINVAL` if anything (VID/PID, descriptor layout, endpoint config)
+    // doesn't pass its checks.
     let udc = find_udc()?;
-    fs::write(format!("{g}/UDC"), format!("{udc}\n"))?;
-    info!("USB gadget {gadget_name} enabled on UDC {udc}");
+    info!(gadget = gadget_name, udc = %udc, "USB: binding gadget to UDC");
+    let udc_path = format!("{g}/UDC");
+    fs::write(&udc_path, format!("{udc}\n")).map_err(|e| {
+        io::Error::new(
+            e.kind(),
+            format!(
+                "UDC bind failed ({udc_path} <- '{udc}'): {e}. \
+                 Common causes: another gadget already bound (release-udc didn't run / failed), \
+                 kernel rejected the descriptor (idProduct/idVendor not accepted as-is), \
+                 or the UDC driver isn't ready."
+            ),
+        )
+    })?;
+    info!(gadget = gadget_name, udc = %udc, "USB gadget enabled");
+    // CRITICAL: from this point on the host can see us and may yank Vbus at
+    // any instant. Push every preceding log line out to journald NOW, while
+    // we still have power.
+    flush_logs();
 
     Ok(ep0)
 }
@@ -204,6 +308,10 @@ fn write_and_enable(gadget_name: &str, ffs_mount: &str, descs: &[u8]) -> io::Res
 /// Read ep0 events and respond to AOAP vendor requests.
 ///
 /// Returns when `AOAP_START_ACCESSORY` (req 53) is received.
+///
+/// Unused by the current skip-handshake `run_handshake`; kept so an HU that
+/// requires the two-persona dance can be supported by re-wiring the caller.
+#[allow(dead_code)]
 /// The host will disconnect and re-enumerate after this request.
 fn wait_for_aoap(ep0: &mut fs::File) -> io::Result<()> {
     // usb_functionfs_event is 12 bytes:
@@ -247,15 +355,76 @@ fn wait_for_aoap(ep0: &mut fs::File) -> io::Result<()> {
 /// Wait for `FUNCTIONFS_ENABLE` on the accessory gadget's ep0.
 ///
 /// This fires once the host has enumerated the new gadget and enabled it.
+/// If the host never enumerates us (e.g. a car HU that doesn't recognize our
+/// VID/PID), this would otherwise block forever in silence. We log every ep0
+/// event we receive and emit a periodic info-level heartbeat so the journal
+/// makes that stuck state obvious.
 fn wait_for_enable(ep0: &mut fs::File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+    info!("USB: waiting for FUNCTIONFS_ENABLE from host");
+    let started = Instant::now();
+    let mut last_heartbeat = started;
+    let mut events = 0u32;
     let mut event = [0u8; 12];
+
+    // Use a short read timeout via poll(2) so we can emit heartbeats while
+    // also yielding on every ep0 event. ep0 doesn't natively block on a
+    // deadline, so we poll first; if nothing arrives in ~3s we log and loop.
+    let fd = ep0.as_raw_fd();
     loop {
-        ep0.read_exact(&mut event)?;
-        match event[8] {
-            FUNCTIONFS_ENABLE => return Ok(()),
-            FUNCTIONFS_BIND => debug!("acc ep0: BIND"),
-            other => debug!("acc ep0: event type={other}"),
+        let mut pfd = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut pfd, 1, 3000) };
+        if ready < 0 {
+            return Err(io::Error::last_os_error());
         }
+        if ready == 0 {
+            // Timeout: log heartbeat every 3s of silence.
+            let elapsed = started.elapsed();
+            info!(
+                elapsed_s = elapsed.as_secs(),
+                events_seen = events,
+                "USB: still waiting for host enumeration (no ep0 event yet)"
+            );
+            flush_logs();
+            last_heartbeat = Instant::now();
+            continue;
+        }
+
+        ep0.read_exact(&mut event)?;
+        events += 1;
+        let evt = event[8];
+        let since_last = last_heartbeat.elapsed();
+        match evt {
+            FUNCTIONFS_ENABLE => {
+                info!(
+                    total_events = events,
+                    elapsed_s = started.elapsed().as_secs(),
+                    "USB: FUNCTIONFS_ENABLE received — host has enumerated us"
+                );
+                flush_logs();
+                return Ok(());
+            }
+            FUNCTIONFS_BIND => debug!(elapsed_ms = since_last.as_millis(), "acc ep0: BIND"),
+            FUNCTIONFS_SETUP => debug!(
+                elapsed_ms = since_last.as_millis(),
+                bRequestType = event[0],
+                bRequest = event[1],
+                wValue = u16::from_le_bytes([event[2], event[3]]),
+                wIndex = u16::from_le_bytes([event[4], event[5]]),
+                wLength = u16::from_le_bytes([event[6], event[7]]),
+                "acc ep0: SETUP (unexpected before ENABLE)"
+            ),
+            other => debug!(
+                elapsed_ms = since_last.as_millis(),
+                evt = other,
+                "acc ep0: event"
+            ),
+        }
+        last_heartbeat = Instant::now();
     }
 }
 
@@ -273,12 +442,17 @@ fn find_udc() -> io::Result<String> {
 
 /// Disable and remove a gadget + its FunctionFS mount.
 ///
-/// Errors are logged but not propagated (called from Drop).
+/// Errors at each step are logged at `debug!` and intentionally not
+/// propagated — `cleanup` runs from `Drop` and we want best-effort teardown
+/// even if the kernel state is partially gone (e.g. after a crash).
 fn cleanup(gadget_name: &str, ffs_mount: &str) -> io::Result<()> {
+    debug!(gadget = gadget_name, ffs_mount, "USB: cleanup begin");
     let g = format!("{CONFIGFS_ROOT}/{gadget_name}");
 
-    // Disable gadget first.
-    let _ = fs::write(format!("{g}/UDC"), "\n");
+    // Disable gadget first — empty UDC string unbinds from the UDC.
+    if let Err(e) = fs::write(format!("{g}/UDC"), "\n") {
+        debug!(error = %e, "cleanup: unbind UDC failed (already unbound?)");
+    }
 
     // Remove function symlink.
     let _ = fs::remove_file(format!("{g}/configs/c.1/ffs.{gadget_name}"));
@@ -289,11 +463,14 @@ fn cleanup(gadget_name: &str, ffs_mount: &str) -> io::Result<()> {
     let _ = fs::remove_dir(format!("{g}/functions/ffs.{gadget_name}"));
 
     // Unmount FunctionFS.
-    let status = Command::new("umount").arg(ffs_mount).status();
-    if let Ok(s) = status {
-        if !s.success() {
-            warn!("umount {ffs_mount} exited with {s}");
-        }
+    match Command::new("umount").arg(ffs_mount).output() {
+        Ok(out) if out.status.success() => debug!(target = ffs_mount, "umount ok"),
+        Ok(out) => warn!(
+            "umount {ffs_mount} exited with {}: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+        Err(e) => warn!("umount {ffs_mount} failed to spawn: {e}"),
     }
     let _ = fs::remove_dir(ffs_mount);
 
@@ -301,5 +478,6 @@ fn cleanup(gadget_name: &str, ffs_mount: &str) -> io::Result<()> {
     let _ = fs::remove_dir(format!("{g}/strings/0x409"));
     let _ = fs::remove_dir(&g);
 
+    debug!(gadget = gadget_name, "USB: cleanup done");
     Ok(())
 }

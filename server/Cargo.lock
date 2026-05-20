@@ -117,6 +117,7 @@ dependencies = [
  "aap-contracts",
  "async-trait",
  "bytes",
+ "libc",
  "openssl",
  "thiserror",
  "tokio",

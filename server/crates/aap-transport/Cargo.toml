@@ -13,6 +13,9 @@ thiserror     = { workspace = true }
 tokio         = { workspace = true }
 tracing       = { workspace = true }
 openssl       = { workspace = true }
+# Needed for poll(2) on the USB-gadget ep0 file — heartbeat logging while
+# waiting for FUNCTIONFS_ENABLE from a not-yet-enumerated host.
+libc          = "0.2"
 
 [features]
 # Statically build & link OpenSSL instead of using the system library.
