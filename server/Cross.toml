@@ -8,8 +8,15 @@ pre-build = [
 
 # Used by the pre-push hook on non-Linux hosts to surface Linux-only deps
 # (bluer / libdbus-sys) that the macOS host build never compiles.
+#
+# The default cross x86_64 image ships an ancient `protobuf-compiler` that only
+# understands proto2, so we install a fresh protoc release into /usr/local/bin
+# (which precedes /usr/bin in PATH).
 [target.x86_64-unknown-linux-gnu]
 pre-build = [
     "apt-get update -qq",
-    "apt-get install -y --no-install-recommends protobuf-compiler libdbus-1-dev libssl-dev",
+    "apt-get install -y --no-install-recommends curl ca-certificates unzip libdbus-1-dev libssl-dev",
+    "curl -fsSL https://github.com/protocolbuffers/protobuf/releases/download/v25.1/protoc-25.1-linux-x86_64.zip -o /tmp/protoc.zip",
+    "unzip -o /tmp/protoc.zip -d /usr/local",
+    "rm /tmp/protoc.zip",
 ]

@@ -41,10 +41,11 @@ pub(crate) async fn run(
     let session = bluer::Session::new().await?;
     let adapter = session.default_adapter().await?;
     adapter.set_powered(true).await?;
-    info!(
-        address = %adapter.address().await?,
-        "bridge: bluetooth adapter ready"
-    );
+    // Resolve the adapter address before the `info!` call: awaiting inside the
+    // macro arguments leaves a non-Send tracing value held across the await,
+    // which makes `gatt::run`'s Future !Send and breaks `tokio::spawn`.
+    let address = adapter.address().await?;
+    info!(%address, "bridge: bluetooth adapter ready");
 
     // Info is static — encode once and clone the Arc on every read.
     let info_bytes: Arc<Vec<u8>> = {
