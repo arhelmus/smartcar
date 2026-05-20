@@ -131,12 +131,46 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for FlushingStdout {
     }
 }
 
+/// Flight-recorder checkpoint that bypasses tracing/journald entirely.
+///
+/// Appends `step` (with the current PID and a monotonic-ish timestamp)
+/// directly to `/var/log/smartcar-boot.log` and `fsync`s before returning.
+/// Used to pin down at which point in `main()` the binary dies on car-mode
+/// boots — journald goes through systemd's stdout pipe and may lose data
+/// across a Vbus cut, but a direct `sync_all` on a real file is the most
+/// durable thing we can do from userspace.
+///
+/// Errors are intentionally swallowed: this is a diagnostic side-channel,
+/// not a load-bearing operation.
+fn flight_log(step: &str) {
+    use std::io::Write;
+    let pid = std::process::id();
+    let elapsed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/var/log/smartcar-boot.log")
+    {
+        let _ = writeln!(f, "{elapsed:.3}  pid={pid}  {step}");
+        let _ = f.sync_all();
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Checkpoint #0 — VERY first thing in main(). If this line is absent
+    // after a car-mode boot, the binary never reached `main()` (dynamic
+    // linker failure, libflutter_engine.so resolution issue, etc.).
+    flight_log("main: entered");
+
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(FlushingStdout)
         .init();
+    flight_log("main: tracing_subscriber initialized");
 
     // First log line of the binary. With per-event flushing installed above,
     // even a Vbus cut immediately after this returns leaves "smartcar-server
@@ -147,6 +181,10 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(pid = std::process::id(), "smartcar-server: starting");
 
     let args = Args::parse();
+    flight_log(&format!(
+        "main: args parsed transport={:?} bridge={:?} testkit={}",
+        args.transport, args.bridge, args.testkit
+    ));
 
     // ── iOS-app bridge ────────────────────────────────────────────────────────
     // Independent of the AA transport: a control plane the iOS app talks to
@@ -185,6 +223,7 @@ async fn main() -> anyhow::Result<()> {
     // requested. A Flutter init failure propagates — no silent fallback —
     // so a broken engine deployment fails loud instead of pretending to
     // work with a test pattern.
+    flight_log("main: about to start producers");
     let pointer_sink: Arc<dyn PointerSink> = if args.testkit {
         start_testkit_producers(
             frame_tx,
@@ -199,6 +238,7 @@ async fn main() -> anyhow::Result<()> {
         // The Flutter embedder doubles as the pointer sink (touches drive its UI).
         start_flutter_producers(frame_tx, video_start_rx)?
     };
+    flight_log("main: producers up");
 
     // ── Transport + connection ────────────────────────────────────────────────
     // Build the negotiable config menu once; the descriptor (VideoService) and
@@ -230,10 +270,13 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!(
                     "USB: starting AOAP handshake — plug the USB cable into the head unit"
                 );
+                flight_log("main: about to call UsbTransport::connect()");
                 let transport = UsbTransport::connect().await?;
+                flight_log("main: UsbTransport::connect() returned Ok");
                 Connection::new(transport, registry, frame_rx, video_start_tx, advertised)
                     .run()
                     .await?;
+                flight_log("main: Connection::run() returned");
             }
             #[cfg(not(target_os = "linux"))]
             {
