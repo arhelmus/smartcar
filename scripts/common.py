@@ -39,6 +39,8 @@ def _load_env_local() -> None:
         key, _, value = line.partition("=")
         key = key.strip()
         value = value.strip()
+        # Expand `~` and `$VARS` so paths like `$HOME/.cache/foo` work in-file.
+        value = os.path.expanduser(os.path.expandvars(value))
         if key and key not in os.environ:
             os.environ[key] = value
 
