@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Thin shim — the actual checks live in scripts/review.py so they can also
 # be invoked via `make review` and extended without bash gymnastics.
+#
+# Git passes `<remote-name> <url>` on argv and ref lines on stdin; review.py
+# ignores both, so don't forward them.
 set -euo pipefail
-exec python3 "$(git rev-parse --show-toplevel)/scripts/review.py" "$@"
+exec python3 "$(git rev-parse --show-toplevel)/scripts/review.py"
