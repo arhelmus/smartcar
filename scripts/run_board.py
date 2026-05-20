@@ -5,7 +5,7 @@ Usage:
     python3 scripts/run_board.py [options]
 
 Options:
-    --laptop-ip IP    Laptop's USB-Ethernet IP (auto-detected from LAPTOP_USB_MAC if omitted).
+    --laptop-ip IP    Laptop's USB-Ethernet IP (auto-detected from BOARD_MAC if omitted).
     --board HOST      Board SSH address (default: BOARD_HOST in .env.local or 10.55.0.1).
     --user USER       SSH user (default: BOARD_USER in .env.local or root).
     --log LEVEL       RUST_LOG level (default: info).
@@ -22,10 +22,10 @@ Prerequisites on the board (Armbian):
     apt-get install -y libssl3
 
 Environment / .env.local:
-    BOARD_HOST       Board SSH address
-    BOARD_USER       Board SSH user
-    LAPTOP_USB_MAC   Laptop-side USB Ethernet MAC for auto IP detection
-    LAPTOP_USB_IP    Explicit laptop IP (skips MAC lookup)
+    BOARD_HOST   Board SSH address
+    BOARD_USER   Board SSH user
+    BOARD_MAC    Host-side MAC of the board's USB Ethernet gadget — used to
+                 auto-detect which laptop interface is the USB link.
 """
 
 import argparse
@@ -46,7 +46,7 @@ def main() -> int:
     parser.add_argument("--user", default=common.BOARD_USER, metavar="USER",
                         help=f"Board SSH user (default: {common.BOARD_USER}).")
     parser.add_argument("--laptop-ip", default=None, metavar="IP",
-                        help="Laptop USB-Ethernet IP. Auto-detected from LAPTOP_USB_MAC when omitted.")
+                        help="Laptop USB-Ethernet IP. Auto-detected from BOARD_MAC when omitted.")
     parser.add_argument("--log", default=common.DEFAULT_LOG, metavar="LEVEL",
                         help=f"RUST_LOG level (default: {common.DEFAULT_LOG}).")
     parser.add_argument("--attached", action="store_true",
@@ -66,7 +66,7 @@ def main() -> int:
     laptop_ip = args.laptop_ip or common.laptop_usb_ip()
     if not laptop_ip:
         print("ERROR: could not determine laptop USB-Ethernet IP.", file=sys.stderr)
-        print("       Set LAPTOP_USB_MAC in .env.local, or pass --laptop-ip <ip>.", file=sys.stderr)
+        print("       Set BOARD_MAC in .env.local, or pass --laptop-ip <ip>.", file=sys.stderr)
         return 1
     if not args.laptop_ip:
         print(f"Auto-detected laptop USB-Ethernet IP: {laptop_ip}", file=sys.stderr)

@@ -122,28 +122,22 @@ def _find_ip_by_mac(mac: str) -> str:
 
 
 def laptop_usb_ip() -> str:
-    """Return the laptop's USB-Ethernet IP.
+    """Return the laptop's USB-Ethernet IP, found by matching BOARD_MAC.
 
-    Resolution order:
-      1. LAPTOP_USB_IP env var (explicit override)
-      2. Auto-detect via LAPTOP_USB_MAC env var (MAC → ifconfig lookup)
-      3. Empty string (caller must handle the missing case)
+    BOARD_MAC is the host-side MAC the board's g_ether gadget advertises
+    (`/etc/modprobe.d/g_ether.conf` → `host_addr`), so it identifies which of
+    the laptop's interfaces is the USB link to the board regardless of the
+    rotating `enX` name macOS assigns it. Returns an empty string when the
+    var is unset or no matching interface is found — the caller decides
+    whether that's fatal.
     """
-    explicit = os.environ.get("LAPTOP_USB_IP", "").strip()
-    if explicit:
-        return explicit
-    mac = os.environ.get("LAPTOP_USB_MAC", "").strip()
-    if mac:
-        return _find_ip_by_mac(mac)
-    return ""
+    mac = os.environ.get("BOARD_MAC", "").strip()
+    if not mac:
+        return ""
+    return _find_ip_by_mac(mac)
 
 
 # ── Board USB-Ethernet IP assignment ─────────────────────────────────────────
-
-# Fallback only — the real values come from .env.local
-# (LAPTOP_USB_IP / LAPTOP_USB_MASK), loaded by _load_env_local() above.
-LAPTOP_USB_IP_DEFAULT   = "10.55.0.2"
-LAPTOP_USB_MASK_DEFAULT = "24"
 
 
 def _find_iface_by_mac(mac: str) -> str | None:
@@ -163,26 +157,21 @@ def _find_iface_by_mac(mac: str) -> str | None:
     return None
 
 
-def assign_board_ip(
-    ip: str | None = None,
-    mask: str | None = None,
-    check: bool = False,
-) -> int:
+def assign_board_ip(check: bool = False) -> int:
     """Assign the laptop's USB-Ethernet IP so the board is reachable.
 
-    Finds the interface whose MAC matches LAPTOP_USB_MAC and assigns the IP/mask
-    via `sudo ifconfig` (idempotent — a no-op when already assigned).  With
-    *check* only reports the current state.  Returns 0 on success / nothing to
-    do, non-zero on error.
-
-    IP/mask resolution (mirrors laptop_usb_ip()): explicit argument →
-    .env.local (LAPTOP_USB_IP / LAPTOP_USB_MASK) → built-in default.
+    Finds the interface whose MAC matches BOARD_MAC (set by the board's
+    g_ether gadget) and assigns it 10.55.0.2/24 via `sudo ifconfig` —
+    idempotent, a no-op when already assigned. The board sits at the fixed
+    g_ether gadget address 10.55.0.1, so the laptop side is paired to it.
+    With *check* only reports the current state. Returns 0 on success /
+    nothing to do, non-zero on error.
     """
-    ip = ip or os.environ.get("LAPTOP_USB_IP", "").strip() or LAPTOP_USB_IP_DEFAULT
-    mask = mask or os.environ.get("LAPTOP_USB_MASK", "").strip() or LAPTOP_USB_MASK_DEFAULT
-    mac = (os.environ.get("LAPTOP_USB_MAC") or "").strip()
+    ip = "10.55.0.2"
+    mask = "24"
+    mac = (os.environ.get("BOARD_MAC") or "").strip()
     if not mac:
-        print("ERROR: LAPTOP_USB_MAC not set — add it to .env.local.", file=sys.stderr)
+        print("ERROR: BOARD_MAC not set — add it to .env.local.", file=sys.stderr)
         return 1
 
     iface = _find_iface_by_mac(mac)

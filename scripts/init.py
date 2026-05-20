@@ -124,7 +124,7 @@ def _check_env_local() -> None:
         return
     shutil.copy(template, target)
     print(f"  Created .env.local from {template.name}.", file=sys.stderr)
-    print("  Edit .env.local to fill in your local values (BOARD_HOST, LAPTOP_USB_MAC, …).",
+    print("  Edit .env.local to fill in your local values (BOARD_HOST, BOARD_MAC, …).",
           file=sys.stderr)
 
 
