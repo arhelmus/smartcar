@@ -10,7 +10,6 @@ Cargo.lock
 .idea/
 .vscode/
 *.swp
-docker/.env
 server/certs/*.key
 server/certs/*.crt
 server/certs/*.pem

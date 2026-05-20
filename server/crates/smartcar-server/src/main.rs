@@ -74,9 +74,8 @@ struct Args {
     transport: TransportChoice,
 
     /// Head-unit address (TCP transport only).
-    /// openauto listens on 5000 inside Docker, mapped to host 5001
-    /// (5000 is taken by macOS AirPlay Receiver).
-    #[arg(long, default_value = "127.0.0.1:5001")]
+    /// Native openauto (built via `scripts/run_openauto.py`) listens on 5278.
+    #[arg(long, default_value = "127.0.0.1:5278")]
     target: String,
 
     /// Use the synthetic testkit producers instead of the Flutter renderer.

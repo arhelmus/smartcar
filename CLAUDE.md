@@ -2,21 +2,22 @@
 
 ## What this project is
 
-**smartcar** is a custom Android Auto projection source written in Rust. It implements the phone/server side of the Android Auto (AA) wire protocol and connects to a head unit — either `openauto` running in Docker for local development, or a real car head unit in production.
+**smartcar** is a custom Android Auto projection source written in Rust. It implements the phone/server side of the Android Auto (AA) wire protocol and connects to a head unit — either `openauto` built and run natively (via `shell.nix`) for local development, or a real car head unit in production.
 
 Key roles:
 - **`server/`** — Rust workspace; the AA projection source. The top-level crates are `aap-core` (protocol engine), `aap-transport` (TCP/TLS), `aap-video` (GStreamer encoder), and `aap-flutter` (embedded UI renderer).
-- **`docker/`** — `openauto` head-unit emulator + Docker Compose stack; VNC-accessible on port 5900.
-- **`scripts/`** — Python orchestration (stdlib only); `run_stack.py` brings up the full dev environment.
-- **`apps/`** — future iOS/Android client apps (currently placeholders).
-- **`server/third_party/openauto`** — vendored `openauto` source used as a reference.
+- **`server/flutter-ui/`** — Flutter head-unit UI embedded in `smartcar-server` via `aap-flutter`.
+- **`mobile/`** — phone-side Flutter app (iOS + Android), talks to the board over the `aap-bridge` BLE control channel.
+- **`shell.nix`** — hermetic Nix environment that provides Qt5 / GStreamer / libblkid / OpenSSL for the native openauto build.
+- **`scripts/`** — Python orchestration (stdlib only): `init.py`, `build_openauto.py`, `run_openauto.py`, `run_server.py`, `run_board.py`, `deploy_board.py`, `review.py`.
+- **`server/third_party/openauto`** — vendored `openauto` source, patched on `make init` from `scripts/patches/openauto/`.
 
 ## Running & testing locally
 
-**Never hand-run `cargo run` for the server, and never start the emulator by hand.** To exercise the end-to-end pipeline always use the orchestration scripts:
+**Never hand-run `cargo run` for the server, and never start openauto by hand.** To exercise the end-to-end pipeline always use the orchestration scripts:
 
-- **`python3 scripts/run_openauto.py`** — brings up the `openauto` head-unit emulator (Docker; VNC on 5900). Start this first.
-- **`python3 scripts/run_server.py`** — builds and runs `smartcar-server` against the emulator.
+- **`python3 scripts/run_openauto.py`** — builds (if needed) and launches openauto natively under `nix-shell`. Listens on TCP `127.0.0.1:5278`. Start this first.
+- **`python3 scripts/run_server.py`** — builds and runs `smartcar-server` against the local openauto.
 
 Log behaviour for `run_server.py`:
 
