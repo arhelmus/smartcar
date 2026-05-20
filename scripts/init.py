@@ -11,7 +11,7 @@ re-run `make init`.
 """
 
 # Bump whenever init.py changes meaningfully.
-INIT_VERSION = 1
+INIT_VERSION = 2
 
 import shutil
 import subprocess
@@ -170,18 +170,21 @@ def _setup_git_hooks() -> None:
 
 def _patch_openauto() -> None:
     print("Checking openauto patches …", file=sys.stderr)
-    result = subprocess.run(
-        ["git", "-C", str(OPENAUTO_DIR), "log", "--oneline", f"--grep={OPENAUTO_PATCH_COMMIT}"],
-        capture_output=True, text=True,
-    )
-    if result.returncode == 0 and result.stdout.strip():
-        print("  Patches already applied.", file=sys.stderr)
-        return
-
     patch_files = sorted(PATCHES_DIR.glob("*.patch"))
     if not patch_files:
         print("  No patches to apply.", file=sys.stderr)
         return
+
+    # If our patch commit is already at HEAD, drop it so we re-apply the
+    # current set of patches cleanly — this makes adding or removing a patch
+    # take effect on the next `make init` without manual submodule surgery.
+    head_subject = subprocess.run(
+        ["git", "-C", str(OPENAUTO_DIR), "log", "-1", "--format=%s"],
+        capture_output=True, text=True,
+    ).stdout.strip()
+    if head_subject == OPENAUTO_PATCH_COMMIT:
+        print("  Resetting previous patch commit to re-apply …", file=sys.stderr)
+        _run(["git", "-C", str(OPENAUTO_DIR), "reset", "--hard", "HEAD~1"])
 
     print(f"  Applying {len(patch_files)} patch(es) …", file=sys.stderr)
     for patch in patch_files:

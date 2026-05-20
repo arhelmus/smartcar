@@ -151,8 +151,10 @@ def build_openauto(rebuild: bool = False) -> None:
         print("Note: /etc/aasdk cert install skipped (needs root) — artifacts OK", file=sys.stderr)
 
     # ── openauto ──
+    # The BluetoothAdapterLister stub used to be injected here via
+    # -include scripts/openauto_macos_stubs.hpp; it's now patched into
+    # SettingsWindow.cpp by scripts/patches/openauto/macos-bluetooth-adapter-stub.patch.
     print("─── Building openauto ───", file=sys.stderr)
-    stubs_header = common.REPO_ROOT / "scripts" / "openauto_macos_stubs.hpp"
     _run([
         "cmake", "-S", str(OPENAUTO_DIR), "-B", str(OPENAUTO_BUILD),
         "-GNinja",
@@ -160,7 +162,6 @@ def build_openauto(rebuild: bool = False) -> None:
         "-DNOPI=ON",
         "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
         f"-DCMAKE_PREFIX_PATH={_cmake_prefix_path()}",
-        f"-DCMAKE_CXX_FLAGS_INIT=-include {stubs_header}",
         f"-DCMAKE_EXE_LINKER_FLAGS={_openssl_link_flags()}",
     ] + _FINDER_OVERRIDES + _blkid_flags())
     _run(["cmake", "--build", str(OPENAUTO_BUILD), f"-j{jobs}"])
