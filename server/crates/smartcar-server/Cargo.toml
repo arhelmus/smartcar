@@ -14,6 +14,7 @@ aap-audio          = { workspace = true }
 aap-input          = { workspace = true }
 aap-testkit        = { workspace = true }
 aap-flutter        = { workspace = true }
+aap-bridge         = { workspace = true }
 anyhow             = { workspace = true }
 clap               = { workspace = true }
 tokio              = { workspace = true }

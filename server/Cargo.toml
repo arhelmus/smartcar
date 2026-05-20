@@ -10,6 +10,7 @@ members = [
     "crates/aap-input",
     "crates/aap-testkit",
     "crates/aap-flutter",
+    "crates/aap-bridge",
     "crates/smartcar-server",
 ]
 
@@ -30,12 +31,13 @@ aap-audio     = { path = "crates/aap-audio" }
 aap-input     = { path = "crates/aap-input" }
 aap-testkit   = { path = "crates/aap-testkit" }
 aap-flutter   = { path = "crates/aap-flutter" }
+aap-bridge    = { path = "crates/aap-bridge" }
 
 # External — pinned majors, agents in W1–W6 may bump minor versions
 async-trait        = "0.1"
 bitflags           = "2"
 bytes              = "1"
-thiserror          = "2"
+thiserror           = "2"
 anyhow             = "1"
 tokio              = { version = "1", features = ["full"] }
 tracing            = "0.1"
@@ -44,6 +46,9 @@ clap               = { version = "4", features = ["derive"] }
 prost              = "0.14"
 prost-build        = "0.14"
 openssl            = "0.10"
+bluer              = { version = "0.17", default-features = false, features = ["bluetoothd"] }
+uuid               = { version = "1" }
+futures            = "0.3"
 
 [profile.release]
 lto      = "thin"

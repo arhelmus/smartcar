@@ -31,6 +31,7 @@ use clap::{Parser, ValueEnum};
 use tokio::net::TcpStream;
 
 use aap_audio::{AudioService, MediaFmt, MixerSink, SpeechFmt, SystemFmt};
+use aap_bridge::{run_bridge, BridgeTransport, ControlEvent, ControlRequest, DeviceInfo};
 use aap_core::{Connection, ServiceRegistry};
 use aap_input::{InputService, LogPointerSink, PointerSink};
 use aap_testkit::{
@@ -53,6 +54,18 @@ enum TransportChoice {
     Usb,
 }
 
+/// Which transport carries the iOS-app bridge control plane.
+#[derive(ValueEnum, Clone, Debug, PartialEq)]
+enum BridgeChoice {
+    /// TCP server — default; lets the iOS Simulator (no Bluetooth) connect
+    /// to a `smartcar-server` on the same Mac.
+    Tcp,
+    /// BLE GATT server — Linux only. Used by the board's run/boot scripts.
+    Ble,
+    /// Disable the bridge.
+    None,
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "smartcar-server", version)]
 struct Args {
@@ -73,6 +86,15 @@ struct Args {
     /// with no Flutter engine dependency.
     #[arg(long, default_value_t = false)]
     testkit: bool,
+
+    /// Transport for the iOS-app bridge.  Defaults to TCP so the Simulator
+    /// can connect; the board's run/boot scripts pass `--bridge ble`.
+    #[arg(long, value_enum, default_value_t = BridgeChoice::Tcp)]
+    bridge: BridgeChoice,
+
+    /// Listen address when `--bridge tcp`.
+    #[arg(long, default_value = "127.0.0.1:4789")]
+    bridge_addr: String,
 }
 
 #[tokio::main]
@@ -82,6 +104,26 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Args::parse();
+
+    // ── iOS-app bridge ────────────────────────────────────────────────────────
+    // Independent of the AA transport: a control plane the iOS app talks to
+    // for out-of-band commands + signalling about A2DP / PAN state. Two
+    // transports behind the same protobuf surface:
+    //   --bridge tcp  → TCP server (default; Simulator-friendly, no Bluetooth)
+    //   --bridge ble  → BLE GATT server (Linux only; the board's mode)
+    //   --bridge none → disabled
+    // Commands are logged for now; future wiring will route them to Flutter,
+    // audio session, and the PAN watcher.
+    let bridge_transport = match args.bridge {
+        BridgeChoice::Tcp => BridgeTransport::Tcp(
+            args.bridge_addr.parse().map_err(|e| {
+                anyhow::anyhow!("invalid --bridge-addr '{}': {}", args.bridge_addr, e)
+            })?,
+        ),
+        BridgeChoice::Ble => BridgeTransport::Ble,
+        BridgeChoice::None => BridgeTransport::None,
+    };
+    spawn_bridge(bridge_transport);
 
     // ── Video frame channel + focus gate ──────────────────────────────────────
     // The sender goes to the producer, the receiver to Connection. The start
@@ -163,6 +205,37 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("connection closed cleanly");
     Ok(())
+}
+
+// ── iOS-app bridge ────────────────────────────────────────────────────────────
+
+/// Spawn the iOS-app bridge plus a command-drain logger.
+///
+/// The bridge owns its mpsc/broadcast channels for the lifetime of the
+/// process. The drain task logs every decoded `ControlRequest` until future
+/// consumers (Flutter, audio session, PAN watcher) take it over. The
+/// broadcast sender is moved into the bridge task; event producers will get
+/// their own clone when wired in.
+fn spawn_bridge(transport: BridgeTransport) {
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<ControlRequest>(64);
+    let (evt_tx, _) = tokio::sync::broadcast::channel::<ControlEvent>(64);
+
+    tokio::spawn(async move {
+        while let Some(req) = cmd_rx.recv().await {
+            tracing::info!(?req, "bridge: command");
+        }
+    });
+
+    tokio::spawn(async move {
+        let info = DeviceInfo {
+            name: "Smartcar".into(),
+            firmware_version: env!("CARGO_PKG_VERSION").into(),
+            protocol_version: 1,
+        };
+        if let Err(e) = run_bridge(transport, info, cmd_tx, evt_tx).await {
+            tracing::warn!(error = %e, "bridge: stopped with error");
+        }
+    });
 }
 
 // ── Testkit producers ─────────────────────────────────────────────────────────

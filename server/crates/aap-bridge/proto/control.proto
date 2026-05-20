@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package smartcar.bridge.v1;
+
+// ── Phone → Board ────────────────────────────────────────────────────────────
+
+// Top-level request written to the Command characteristic.
+message ControlRequest {
+  oneof req {
+    LaunchApp     launch_app  = 1;
+    SetSetting    set_setting = 2;
+    NavCommand    nav         = 3;
+    RequestStatus status      = 4;
+  }
+}
+
+message LaunchApp     { string app_id = 1; }
+message SetSetting    { string key = 1; string value = 2; }
+message NavCommand    { string action = 1; }
+message RequestStatus {}
+
+// ── Board → Phone ────────────────────────────────────────────────────────────
+
+// Top-level event sent as a notification on the Event characteristic.
+message ControlEvent {
+  oneof evt {
+    Status     status      = 1;
+    AppChanged app_changed = 2;
+    AudioState audio       = 3;
+    NetState   net         = 4;
+  }
+}
+
+message Status {
+  string current_app     = 1;
+  bool   audio_connected = 2;
+  bool   net_connected   = 3;
+}
+message AppChanged { string app_id = 1; }
+message AudioState { bool   up = 1; string codec = 2; }
+message NetState   { bool   up = 1; string ip    = 2; }
+
+// ── Static read on Info characteristic ───────────────────────────────────────
+
+message Info {
+  string device_name      = 1;
+  string firmware_version = 2;
+  uint32 protocol_version = 3;
+}

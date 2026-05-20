@@ -82,8 +82,15 @@ def main() -> int:
     # ── Run ──────────────────────────────────────────────────────────────────
     target = f"{laptop_ip}:5278"
 
+    # On the board the iOS-app bridge runs over BLE (the dev-default TCP makes
+    # sense only on the Mac where the Simulator lives).
+    bridge_flag = "--bridge ble"
+
     if args.attached:
-        ssh_cmd = f"RUST_LOG={args.log} {common.BOARD_SERVER_BINARY} --target {target}"
+        ssh_cmd = (
+            f"RUST_LOG={args.log} {common.BOARD_SERVER_BINARY} "
+            f"{bridge_flag} --target {target}"
+        )
         print(f"Starting smartcar-server → openauto at {target} (attached) …", file=sys.stderr)
         try:
             _ssh(args.board, args.user, ssh_cmd)
@@ -104,7 +111,7 @@ def main() -> int:
 
     start_cmd = (
         f"nohup env RUST_LOG={args.log}"
-        f" {common.BOARD_SERVER_BINARY} --target {target}"
+        f" {common.BOARD_SERVER_BINARY} {bridge_flag} --target {target}"
         f" > {common.BOARD_LOG_FILE} 2>&1 &"
         f" echo $! > {common.BOARD_PID_FILE} &&"
         f" echo \"Started pid $(cat {common.BOARD_PID_FILE})\""
