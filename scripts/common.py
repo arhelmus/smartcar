@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import re
 import shutil
 import signal
@@ -135,35 +136,35 @@ def stop_local_server() -> None:
 def _find_ip_by_mac(mac: str) -> str:
     """Return the IPv4 address of the local interface whose MAC matches *mac*.
 
-    Parses `ifconfig` output (macOS / Linux).  Returns an empty string if the
-    interface is not found or has no IPv4 address.
+    Returns an empty string if the interface is not found or has no IPv4
+    address. Linux uses /sys/class/net + `ip`; macOS parses `ifconfig`.
     """
-    mac = mac.lower()
-    try:
-        out = subprocess.check_output(["ifconfig"], text=True, stderr=subprocess.DEVNULL)
-    except (FileNotFoundError, subprocess.CalledProcessError):
+    iface = _find_iface_by_mac(mac)
+    if not iface:
         return ""
+    return _iface_ipv4(iface)
 
-    # Split into per-interface blocks (lines not starting with whitespace begin
-    # a new interface on both macOS and Linux ifconfig).
-    current_mac = ""
-    current_ip  = ""
-    for line in out.splitlines():
-        if not line[:1].isspace():
-            # New interface block — flush previous if it matched.
-            current_mac = ""
-            current_ip  = ""
-        stripped = line.strip()
-        m = re.search(r"\bether\s+([0-9a-f:]{17})\b", stripped)
-        if m:
-            current_mac = m.group(1).lower()
-        m = re.search(r"\binet\s+(\d+\.\d+\.\d+\.\d+)\b", stripped)
-        if m:
-            current_ip = m.group(1)
-        if current_mac == mac and current_ip:
-            return current_ip
 
-    return ""
+def _iface_ipv4(iface: str) -> str:
+    """Return *iface*'s IPv4 address, or "" if it has none."""
+    if platform.system() == "Linux":
+        try:
+            out = subprocess.check_output(
+                ["ip", "-4", "-o", "addr", "show", "dev", iface],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            return ""
+    else:  # macOS / *BSD
+        try:
+            out = subprocess.check_output(
+                ["ifconfig", iface], text=True, stderr=subprocess.DEVNULL
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            return ""
+    m = re.search(r"\binet\s+(\d+\.\d+\.\d+\.\d+)\b", out)
+    return m.group(1) if m else ""
 
 
 def laptop_usb_ip() -> str:
@@ -183,8 +184,19 @@ def laptop_usb_ip() -> str:
 
 
 def _find_iface_by_mac(mac: str) -> str | None:
-    """Return the interface name whose ether address matches *mac*."""
+    """Return the interface name whose ether address matches *mac*.
+
+    Linux: read /sys/class/net/*/address (canonical, no shelling out).
+    macOS: parse `ifconfig` output (no equivalent sysfs).
+    """
     mac = mac.lower()
+    sys_class_net = Path("/sys/class/net")
+    if sys_class_net.is_dir():
+        for entry in sys_class_net.iterdir():
+            addr_file = entry / "address"
+            if addr_file.exists() and addr_file.read_text().strip().lower() == mac:
+                return entry.name
+        return None
     try:
         out = subprocess.check_output(["ifconfig"], text=True, stderr=subprocess.DEVNULL)
     except (FileNotFoundError, subprocess.CalledProcessError):
@@ -203,11 +215,13 @@ def assign_board_ip(check: bool = False) -> int:
     """Assign the laptop's USB-Ethernet IP so the board is reachable.
 
     Finds the interface whose MAC matches BOARD_MAC (set by the board's
-    g_ether gadget) and assigns it 10.55.0.2/24 via `sudo ifconfig` —
-    idempotent, a no-op when already assigned. The board sits at the fixed
-    g_ether gadget address 10.55.0.1, so the laptop side is paired to it.
-    With *check* only reports the current state. Returns 0 on success /
-    nothing to do, non-zero on error.
+    g_ether gadget) and assigns it LAPTOP_HOST/24 — idempotent, a no-op
+    when already assigned. The board sits at the fixed g_ether gadget
+    address 10.55.0.1, so the laptop side is paired to it. With *check*
+    only reports the current state. Returns 0 on success / nothing to do,
+    non-zero on error.
+
+    Linux uses `ip addr add`; macOS uses `ifconfig`.
     """
     ip = _require_env("LAPTOP_HOST")
     mask = "24"
@@ -221,9 +235,7 @@ def assign_board_ip(check: bool = False) -> int:
 
     print(f"Found interface: {iface} (MAC {mac})", file=sys.stderr)
 
-    out = subprocess.check_output(["ifconfig", iface], text=True)
-    m = re.search(r"\binet\s+(\d+\.\d+\.\d+\.\d+)\b", out)
-    current_ip = m.group(1) if m else None
+    current_ip = _iface_ipv4(iface) or None
 
     if check:
         print(f"Current IP: {current_ip}" if current_ip else "No IP assigned.", file=sys.stderr)
@@ -234,9 +246,15 @@ def assign_board_ip(check: bool = False) -> int:
         return 0
 
     print(f"Assigning {ip}/{mask} to {iface} …", file=sys.stderr)
-    result = subprocess.run(["sudo", "ifconfig", iface, f"{ip}/{mask}"])
+    if platform.system() == "Linux":
+        cmd = ["sudo", "ip", "addr", "add", f"{ip}/{mask}", "dev", iface]
+        tool = "ip addr add"
+    else:
+        cmd = ["sudo", "ifconfig", iface, f"{ip}/{mask}"]
+        tool = "ifconfig"
+    result = subprocess.run(cmd)
     if result.returncode != 0:
-        print("ERROR: ifconfig failed.", file=sys.stderr)
+        print(f"ERROR: {tool} failed.", file=sys.stderr)
         return result.returncode
     return 0
 

@@ -8,14 +8,19 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
+# Each job provisions the runner with `make init` (submodules, system
+# deps, .env.local seed, cargo-audit / cargo-sweep, init stamp) before
+# running its targeted check, so the CI setup mirrors local dev instead
+# of duplicating apt-get / submodule incantations per job.
+
 jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with: { submodules: recursive }
       - uses: dtolnay/rust-toolchain@stable
         with: { components: rustfmt }
+      - run: make init
       - run: cargo fmt --all -- --check
         working-directory: server
 
@@ -23,12 +28,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with: { submodules: recursive }
       - uses: dtolnay/rust-toolchain@stable
         with: { components: clippy }
-      - run: sudo apt-get install -y protobuf-compiler libdbus-1-dev
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: "server -> target" }
+      - run: make init
       - run: cargo clippy --workspace --all-targets -- -D warnings
         working-directory: server
 
@@ -36,11 +40,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with: { submodules: recursive }
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get install -y protobuf-compiler libdbus-1-dev
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: "server -> target" }
+      - run: make init
       - run: cargo test --workspace
         working-directory: server
 
@@ -48,8 +51,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with: { submodules: recursive }
       - uses: dtolnay/rust-toolchain@stable
+      - run: make init
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -59,11 +62,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with: { submodules: recursive }
       - uses: dtolnay/rust-toolchain@stable
-      - run: sudo apt-get install -y protobuf-compiler libdbus-1-dev
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: "server -> target" }
+      - run: make init
       - run: cargo check --workspace
         working-directory: server
 
@@ -71,8 +73,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-        with: { submodules: recursive }
       - uses: dtolnay/rust-toolchain@stable
+      - run: make init
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           manifest-path: server/Cargo.toml

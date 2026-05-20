@@ -11,8 +11,9 @@ re-run `make init`.
 """
 
 # Bump whenever init.py changes meaningfully.
-INIT_VERSION = 3
+INIT_VERSION = 4
 
+import platform
 import shutil
 import subprocess
 import sys
@@ -84,6 +85,38 @@ def _check_submodules() -> None:
         print("  Submodules OK.", file=sys.stderr)
 
 
+def _check_apt_deps() -> None:
+    """Install the Linux system libs cargo's `-sys` crates need to link.
+
+    macOS dev hosts get these via nix-shell (or Homebrew) — no apt to run.
+    On Linux, libdbus-1-dev / libssl-dev / protobuf-compiler are what
+    libdbus-sys / openssl-sys / prost actually link against; without them
+    cargo build fails late with a pkg-config error.
+    """
+    if platform.system() != "Linux":
+        return
+    print("Checking apt deps …", file=sys.stderr)
+    if not shutil.which("apt-get"):
+        print("  WARNING: apt-get not found — install protobuf-compiler, "
+              "libdbus-1-dev, libssl-dev manually for your distro.", file=sys.stderr)
+        return
+    packages = ["protobuf-compiler", "libdbus-1-dev", "libssl-dev"]
+    # `dpkg -s <pkg>` returns 0 iff installed; skip apt-get if nothing's missing.
+    missing = [
+        p for p in packages
+        if subprocess.run(
+            ["dpkg", "-s", p],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ).returncode != 0
+    ]
+    if not missing:
+        print(f"  {' '.join(packages)} OK.", file=sys.stderr)
+        return
+    print(f"  Installing {' '.join(missing)} …", file=sys.stderr)
+    _run(["sudo", "apt-get", "update", "-qq"])
+    _run(["sudo", "apt-get", "install", "-y", "--no-install-recommends", *missing])
+
+
 def _check_cargo() -> None:
     print("Checking Rust toolchain …", file=sys.stderr)
     if shutil.which("cargo"):
@@ -104,9 +137,14 @@ def _check_cross() -> None:
         print("  WARNING: 'cross' not found — install with: cargo install cross", file=sys.stderr)
         return
 
-    # The cross Docker image for aarch64 is amd64-only; cross mounts the
-    # x86_64-unknown-linux-gnu toolchain from the host into the container.
-    # On Apple Silicon this toolchain must be force-installed.
+    # The cross Docker image is amd64-only. On Apple Silicon we need to
+    # force-install the x86_64-unknown-linux-gnu host toolchain so cross can
+    # mount it into the container; on native Linux x86_64 hosts the matching
+    # toolchain is already in place and nothing extra is needed.
+    if platform.machine() != "arm64":
+        print("  cross OK.", file=sys.stderr)
+        return
+
     HOST_TOOLCHAIN = "stable-x86_64-unknown-linux-gnu"
     installed = subprocess.run(
         ["rustup", "toolchain", "list"], capture_output=True, text=True,
@@ -245,6 +283,7 @@ def main() -> int:
     _check_submodules()
     _patch_openauto()
     _quiet_openauto_pointer()
+    _check_apt_deps()
     _check_cargo()
     _check_cargo_audit()
     _check_cargo_sweep()
