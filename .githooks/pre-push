@@ -2,32 +2,75 @@
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
+LOGDIR="$REPO_ROOT/.githooks"
 
-echo "pre-push: running fmt, clippy, tests, and audit in parallel…"
+echo "pre-push: running checks in parallel…"
 
+# ── Rust (host) ───────────────────────────────────────────────────────────────
 cargo fmt --all --check --manifest-path "$REPO_ROOT/server/Cargo.toml" \
-    >"$REPO_ROOT/.githooks/.fmt.log" 2>&1 &
+    >"$LOGDIR/.fmt.log" 2>&1 &
 FMT_PID=$!
 
 cargo clippy --all-targets --all-features --manifest-path "$REPO_ROOT/server/Cargo.toml" -- -D warnings \
-    >"$REPO_ROOT/.githooks/.clippy.log" 2>&1 &
+    >"$LOGDIR/.clippy.log" 2>&1 &
 CLIPPY_PID=$!
 
 cargo test --manifest-path "$REPO_ROOT/server/Cargo.toml" \
-    >"$REPO_ROOT/.githooks/.test.log" 2>&1 &
+    >"$LOGDIR/.test.log" 2>&1 &
 TEST_PID=$!
 
 cargo audit --file "$REPO_ROOT/server/Cargo.lock" \
-    >"$REPO_ROOT/.githooks/.audit.log" 2>&1 &
+    >"$LOGDIR/.audit.log" 2>&1 &
 AUDIT_PID=$!
 
+# ── Rust (Linux target, non-Linux hosts only) ─────────────────────────────────
+# On Linux the host clippy/test above already exercise the Linux dep tree
+# (bluer, libdbus-sys, etc.); on macOS those are gated out, so cross-compile
+# to x86_64-unknown-linux-gnu via `cross` (needs Docker running).
+CROSS_PID=""
+if [[ "$(uname)" != "Linux" ]]; then
+    (cd "$REPO_ROOT/server" && cross check --workspace --target x86_64-unknown-linux-gnu) \
+        >"$LOGDIR/.cross.log" 2>&1 &
+    CROSS_PID=$!
+fi
+
+# ── Flutter (both projects in parallel) ───────────────────────────────────────
+# Sequenced within each project (pub get → format → analyze → test); the two
+# projects run concurrently with each other and with the Rust checks above.
+(
+    cd "$REPO_ROOT/mobile" \
+        && flutter pub get --enforce-lockfile \
+        && dart format --output=none --set-exit-if-changed . \
+        && flutter analyze \
+        && flutter test
+) >"$LOGDIR/.flutter-mobile.log" 2>&1 &
+FLUTTER_MOBILE_PID=$!
+
+(
+    cd "$REPO_ROOT/server/flutter-ui" \
+        && flutter pub get --enforce-lockfile \
+        && dart format --output=none --set-exit-if-changed . \
+        && flutter analyze \
+        && flutter test
+) >"$LOGDIR/.flutter-embed.log" 2>&1 &
+FLUTTER_EMBED_PID=$!
+
+# ── Wait + report ─────────────────────────────────────────────────────────────
 FAILED=0
 
-wait $FMT_PID    || { echo "ERROR: cargo fmt failed — run: cargo fmt --all --manifest-path server/Cargo.toml"; cat "$REPO_ROOT/.githooks/.fmt.log";    FAILED=1; }
-wait $CLIPPY_PID || { echo "ERROR: cargo clippy failed:"; cat "$REPO_ROOT/.githooks/.clippy.log"; FAILED=1; }
-wait $TEST_PID   || { echo "ERROR: cargo test failed:";   cat "$REPO_ROOT/.githooks/.test.log";   FAILED=1; }
-wait $AUDIT_PID  || { echo "ERROR: cargo audit failed:";  cat "$REPO_ROOT/.githooks/.audit.log";  FAILED=1; }
+wait $FMT_PID    || { echo "ERROR: cargo fmt failed — run: cargo fmt --all --manifest-path server/Cargo.toml"; cat "$LOGDIR/.fmt.log";    FAILED=1; }
+wait $CLIPPY_PID || { echo "ERROR: cargo clippy failed:"; cat "$LOGDIR/.clippy.log"; FAILED=1; }
+wait $TEST_PID   || { echo "ERROR: cargo test failed:";   cat "$LOGDIR/.test.log";   FAILED=1; }
+wait $AUDIT_PID  || { echo "ERROR: cargo audit failed:";  cat "$LOGDIR/.audit.log";  FAILED=1; }
 
-rm -f "$REPO_ROOT/.githooks/.fmt.log" "$REPO_ROOT/.githooks/.clippy.log" "$REPO_ROOT/.githooks/.test.log" "$REPO_ROOT/.githooks/.audit.log"
+if [[ -n "$CROSS_PID" ]]; then
+    wait $CROSS_PID || { echo "ERROR: cross check (x86_64-unknown-linux-gnu) failed — is Docker running?"; cat "$LOGDIR/.cross.log"; FAILED=1; }
+fi
+
+wait $FLUTTER_MOBILE_PID || { echo "ERROR: flutter checks (mobile) failed:";            cat "$LOGDIR/.flutter-mobile.log"; FAILED=1; }
+wait $FLUTTER_EMBED_PID  || { echo "ERROR: flutter checks (server/flutter-ui) failed:"; cat "$LOGDIR/.flutter-embed.log";  FAILED=1; }
+
+rm -f "$LOGDIR"/.fmt.log "$LOGDIR"/.clippy.log "$LOGDIR"/.test.log "$LOGDIR"/.audit.log \
+      "$LOGDIR"/.cross.log "$LOGDIR"/.flutter-mobile.log "$LOGDIR"/.flutter-embed.log
 
 [ $FAILED -eq 0 ] && echo "pre-push: all checks passed." || exit 1
