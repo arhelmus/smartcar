@@ -51,6 +51,7 @@ def main() -> int:
     env = {**os.environ, "RUST_LOG": args.log}
 
     _kill_previous()
+    common.sweep_cargo_cache()
 
     if args.attached:
         cmd = common.cargo_run_cmd(release=args.release, target=args.target, flutter=flutter)

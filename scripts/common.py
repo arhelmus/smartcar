@@ -253,6 +253,23 @@ BOARD_LOG_FILE      = "/tmp/smartcar-server.log"
 
 # ── Build helpers ─────────────────────────────────────────────────────────────
 
+
+def sweep_cargo_cache() -> None:
+    """Drop cargo build artifacts not touched in the last 24h.
+
+    Called automatically at the top of every build path (`run_server.py`,
+    `cross_build_and_deploy`) so the workspace doesn't accumulate stale
+    artifacts. Idempotent — anything the current build still references is
+    rebuilt-into-fresh on the next compile, and active deps stay warm.
+    No-op if cargo-sweep is missing.
+    """
+    if not shutil.which("cargo-sweep"):
+        return
+    server_dir = REPO_ROOT / "server"
+    print("Sweeping cargo cache (>24h old) …", file=sys.stderr)
+    subprocess.run(["cargo", "sweep", "--time", "1", str(server_dir)])
+
+
 def cargo_build_cmd(release: bool, flutter: bool = True) -> list[str]:
     cmd = [
         "cargo", "build",
@@ -300,6 +317,8 @@ def cross_build_and_deploy(board: str, user: str, release: bool) -> int:
         if not shutil.which(tool):
             print(f"ERROR: '{tool}' not found — run 'make init' to set up prerequisites.", file=sys.stderr)
             return 1
+
+    sweep_cargo_cache()
 
     build_cmd = cargo_cross_build_cmd(release=release)
     server_dir = str(REPO_ROOT / "server")

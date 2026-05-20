@@ -11,7 +11,7 @@ re-run `make init`.
 """
 
 # Bump whenever init.py changes meaningfully.
-INIT_VERSION = 2
+INIT_VERSION = 3
 
 import shutil
 import subprocess
@@ -122,6 +122,18 @@ def _check_cargo_audit() -> None:
     _run(["cargo", "install", "cargo-audit"])
 
 
+def _check_cargo_sweep() -> None:
+    print("Checking cargo-sweep …", file=sys.stderr)
+    if shutil.which("cargo-sweep"):
+        print("  cargo-sweep OK.", file=sys.stderr)
+        return
+    if not shutil.which("cargo"):
+        print("  WARNING: cargo not found — skipping cargo-sweep install.", file=sys.stderr)
+        return
+    print("  cargo-sweep not found — installing …", file=sys.stderr)
+    _run(["cargo", "install", "cargo-sweep"])
+
+
 def _check_env_local() -> None:
     print("Checking .env.local …", file=sys.stderr)
     target = REPO_ROOT / ".env.local"
@@ -225,6 +237,7 @@ def main() -> int:
     _quiet_openauto_pointer()
     _check_cargo()
     _check_cargo_audit()
+    _check_cargo_sweep()
     _check_cross()
     _check_env_local()
     _check_certs()
