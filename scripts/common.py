@@ -62,18 +62,9 @@ def _check_init_stamp() -> None:
     try:
         recorded = stamp.read_text().strip()
     except FileNotFoundError:
-        print(
-            f"ERROR: scripts/.init missing — run `make init` "
-            f"(init.py is at v{INIT_VERSION}).",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
+        recorded = ""
     if recorded != str(INIT_VERSION):
-        print(
-            f"ERROR: scripts/.init is stale (records v{recorded}, init.py is "
-            f"at v{INIT_VERSION}) — re-run `make init`.",
-            file=sys.stderr,
-        )
+        print("Please run `make init` — local setup is out of date.", file=sys.stderr)
         raise SystemExit(1)
 
 _check_init_stamp()
