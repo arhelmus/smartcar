@@ -313,9 +313,21 @@ def cargo_build_cmd(release: bool, flutter: bool = True) -> list[str]:
     return cmd
 
 
+def _cargo_target_root() -> Path:
+    """Return the cargo target directory honouring CARGO_TARGET_DIR.
+
+    .env.local points the workspace at $HOME/.cache/smartcar-target so the
+    cross / host caches don't fight each other; the bare-repo default
+    (`server/target/`) is only used when that var is unset.
+    """
+    if env := os.environ.get("CARGO_TARGET_DIR"):
+        return Path(os.path.expandvars(env)).expanduser()
+    return REPO_ROOT / "server" / "target"
+
+
 def server_binary_path(release: bool) -> Path:
     profile = "release" if release else "debug"
-    return REPO_ROOT / "server" / "target" / profile / "smartcar-server"
+    return _cargo_target_root() / profile / "smartcar-server"
 
 
 def cargo_cross_build_cmd(release: bool, flutter: bool = True) -> list[str]:
@@ -334,7 +346,7 @@ def cargo_cross_build_cmd(release: bool, flutter: bool = True) -> list[str]:
 
 def server_cross_binary_path(release: bool) -> Path:
     profile = "release" if release else "debug"
-    return REPO_ROOT / "server" / "target" / CROSS_TARGET / profile / "smartcar-server"
+    return _cargo_target_root() / CROSS_TARGET / profile / "smartcar-server"
 
 
 def cross_build_and_deploy(board: str, user: str, release: bool) -> int:
