@@ -45,11 +45,12 @@ to return to dev/Ethernet mode.
 
 The boot is gated so that the *first* USB gadget bound to the UDC matches the
 selected mode — there is no transient state where the host sees `g_ether`
-appear and then disappear. (An earlier revision did exactly that, loaded
-`g_ether` unconditionally at `sysinit` and tore it down later via
-`release-udc.sh`; production car HUs appear to react to the "device removed"
-event by cutting Vbus before our AOAP gadget can come up. See `git log` for
-the rework.)
+appear and then disappear. (An earlier revision did exactly that: it loaded
+`g_ether` unconditionally at `sysinit` and tore it down later in
+`smartcar-server.service`'s `ExecStartPre`; production car HUs appear to
+react to the "device removed" event by cutting Vbus before our AOAP gadget
+can come up. The teardown script `release-udc.sh` is now gone — the new
+sequence makes it dead weight. See `git log` for the rework.)
 
 1. **`usb-mode.service`** runs early. It reads PI16 (`gpiochip1`, line 272) with an internal pull-up via `gpioget`. If the pin is LOW, it creates `/run/usb-car-mode`.
 
@@ -61,12 +62,11 @@ the rework.)
    `/etc/modules-load.d/usb-gadget.conf` no longer autoloads `g_ether` at
    `sysinit` for exactly this reason.
 
-3. **Car mode** (file present): **`smartcar-server.service`** starts. Its
-   `ExecStartPre` runs `release-udc.sh` (kept as belt-and-suspenders; with
-   the new sequence it's a no-op because nothing is bound to the UDC yet).
-   Then `smartcar-server --transport usb --bridge ble` claims the empty UDC
-   via configfs and brings up the AOAP accessory gadget; the BLE GATT bridge
-   to the iOS app comes up in parallel. (The binary's default bridge mode is
+3. **Car mode** (file present): **`smartcar-server.service`** starts
+   directly (no `ExecStartPre` — the UDC is already empty thanks to step 2).
+   `smartcar-server --transport usb --bridge ble` claims the empty UDC via
+   configfs and brings up the AOAP accessory gadget; the BLE GATT bridge to
+   the iOS app comes up in parallel. (The binary's default bridge mode is
    TCP, suitable for the dev Mac + iOS Simulator — the board unit overrides
    it.) The car sees a single USB device appear on its bus this boot —
    never two.
@@ -76,7 +76,6 @@ the rework.)
 | Path | Purpose |
 |---|---|
 | `/usr/local/sbin/usb-mode-select.sh` | Reads GPIO, creates `/run/usb-car-mode` if in car mode |
-| `/usr/local/sbin/release-udc.sh` | Belt-and-suspenders UDC teardown; no-op with the new boot sequence |
 | `/etc/systemd/system/usb-mode.service` | Oneshot service, runs `usb-mode-select.sh` at boot |
 | `/etc/systemd/system/g_ether-load.service` | Loads `g_ether` only when **not** in car mode (`ConditionPathExists=!/run/usb-car-mode`) |
 | `/etc/systemd/system/smartcar-server.service` | Starts `smartcar-server`, conditional on `/run/usb-car-mode` |
@@ -141,20 +140,8 @@ Past-boot retrieval (boot IDs are stable even if timestamps are off):
 journalctl --list-boots                      # find the trip's boot index
 journalctl -u smartcar-server -b -1          # previous-boot session
 journalctl -u usb-mode -b -1                 # was CAR mode triggered?
-journalctl -t release-udc -b -1              # did the UDC actually free?
 journalctl -k -b -1 | grep -iE 'musb|gadget|udc'  # kernel-side gadget log
 ```
-
-### `release-udc.sh`
-
-The MUSB UDC can be held by **(a)** an already-bound configfs gadget,
-**(b)** `g_ether`, or **(c)** its sub-modules (`usb_f_ecm`, `usb_f_rndis`,
-`libcomposite`). `release-udc.sh` tears down all three in order, verifies
-each UDC's `state` ends up `not-attached`, and **exits non-zero** if any
-UDC is still busy. Combined with `Restart=on-failure` on
-`smartcar-server.service`, that means a stuck UDC surfaces in the journal
-instead of silently never connecting. (With the new boot ordering this
-script is mostly a no-op in car mode — kept as belt-and-suspenders.)
 
 ### Car HU compatibility — USB descriptors
 

@@ -290,9 +290,9 @@ fn write_and_enable(gadget_name: &str, ffs_mount: &str, descs: &[u8]) -> io::Res
             e.kind(),
             format!(
                 "UDC bind failed ({udc_path} <- '{udc}'): {e}. \
-                 Common causes: another gadget already bound (release-udc didn't run / failed), \
-                 kernel rejected the descriptor (idProduct/idVendor not accepted as-is), \
-                 or the UDC driver isn't ready."
+                 Common causes: another gadget already bound (g_ether-load.service \
+                 ran in car mode by mistake?), kernel rejected the descriptor \
+                 (idProduct/idVendor not accepted as-is), or the UDC driver isn't ready."
             ),
         )
     })?;
