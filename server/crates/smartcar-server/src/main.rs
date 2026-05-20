@@ -39,7 +39,8 @@ use aap_testkit::{
 };
 use aap_transport::TcpTransport;
 use aap_video::{
-    advertise, video_frame_channel, video_start_gate, VideoService, VideoStartRx, SOFTWARE_CAPS,
+    advertise, video_frame_channel, video_start_gate, VideoCfg, VideoFrameReceiver,
+    VideoFrameSender, VideoService, VideoStartRx, VideoStartTx, SOFTWARE_CAPS,
 };
 
 /// Which byte-level transport to use for the AA connection.
@@ -215,10 +216,110 @@ async fn main() -> anyhow::Result<()> {
     // ── Audio mixers ──────────────────────────────────────────────────────────
     // Format is the type parameter; the canonical per-stream layout the head
     // unit expects is encoded in MediaFmt/SpeechFmt/SystemFmt.
-    let mut media_mixer = MixerSink::<MediaFmt>::new();
-    let mut speech_mixer = MixerSink::<SpeechFmt>::new();
-    let mut system_mixer = MixerSink::<SystemFmt>::new();
+    // Mutated inside `finish_connection` when the testkit path adds looping
+    // WAV streams; transferred by value otherwise.
+    let media_mixer = MixerSink::<MediaFmt>::new();
+    let speech_mixer = MixerSink::<SpeechFmt>::new();
+    let system_mixer = MixerSink::<SystemFmt>::new();
 
+    // ── Transport ────────────────────────────────────────────────────────────
+    // Bring the transport up *first* so the USB host sees our AOAP gadget on
+    // the bus within milliseconds of execve. libflutter (~96 MB mmap + Dart
+    // VM init, ~1 s) loads after this point, while the host is already happy
+    // talking to a real device. On the board's car-mode boot this is the
+    // difference between the head unit cutting Vbus mid-startup and not.
+    flight_log("main: bringing up transport");
+    let advertised = advertise(&SOFTWARE_CAPS);
+
+    match args.transport {
+        TransportChoice::Tcp => {
+            tracing::info!(target = %args.target, "TCP: connecting to head unit");
+            let stream = TcpStream::connect(&args.target).await?;
+            tracing::info!("TCP connection established");
+            let transport = TcpTransport::new(stream);
+            flight_log("main: transport up (TCP)");
+            finish_connection(
+                transport,
+                &args,
+                frame_tx,
+                frame_rx,
+                video_start_tx,
+                video_start_rx,
+                media_mixer,
+                speech_mixer,
+                system_mixer,
+                advertised,
+            )
+            .await?;
+        }
+        TransportChoice::Usb => {
+            #[cfg(target_os = "linux")]
+            {
+                use aap_transport::UsbTransport;
+                tracing::info!(
+                    "USB: starting AOAP handshake — plug the USB cable into the head unit"
+                );
+                flight_log("main: about to call UsbTransport::connect()");
+                let transport = UsbTransport::connect().await?;
+                flight_log("main: UsbTransport::connect() returned (gadget on the bus)");
+                finish_connection(
+                    transport,
+                    &args,
+                    frame_tx,
+                    frame_rx,
+                    video_start_tx,
+                    video_start_rx,
+                    media_mixer,
+                    speech_mixer,
+                    system_mixer,
+                    advertised,
+                )
+                .await?;
+                flight_log("main: Connection::run() returned");
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = frame_tx;
+                let _ = frame_rx;
+                let _ = video_start_tx;
+                let _ = video_start_rx;
+                let _ = media_mixer;
+                let _ = speech_mixer;
+                let _ = system_mixer;
+                let _ = advertised;
+                anyhow::bail!(
+                    "--transport usb is only supported on Linux \
+                     (FunctionFS gadget requires the Linux USB gadget stack)"
+                );
+            }
+        }
+    }
+
+    tracing::info!("connection closed cleanly");
+    Ok(())
+}
+
+/// Run the AA session once the transport is up.
+///
+/// Producers (the slow libflutter load) are started *here* — after the
+/// transport handshake has put a USB device on the bus / a TCP socket in
+/// `ESTABLISHED` — so the host doesn't time us out during Flutter init.
+#[allow(clippy::too_many_arguments)]
+async fn finish_connection<T>(
+    transport: T,
+    args: &Args,
+    frame_tx: VideoFrameSender,
+    frame_rx: VideoFrameReceiver,
+    video_start_tx: VideoStartTx,
+    video_start_rx: VideoStartRx,
+    mut media_mixer: MixerSink<MediaFmt>,
+    mut speech_mixer: MixerSink<SpeechFmt>,
+    mut system_mixer: MixerSink<SystemFmt>,
+    advertised: Vec<VideoCfg>,
+) -> anyhow::Result<()>
+where
+    T: aap_contracts::Transport + Send + 'static,
+{
     // Producer selection: Flutter by default, testkit only when explicitly
     // requested. A Flutter init failure propagates — no silent fallback —
     // so a broken engine deployment fails loud instead of pretending to
@@ -240,12 +341,6 @@ async fn main() -> anyhow::Result<()> {
     };
     flight_log("main: producers up");
 
-    // ── Transport + connection ────────────────────────────────────────────────
-    // Build the negotiable config menu once; the descriptor (VideoService) and
-    // the index resolver (Connection) must use the *same* list. Software-path
-    // caps for now; the board GPU path will widen these.
-    let advertised = advertise(&SOFTWARE_CAPS);
-
     let mut registry = ServiceRegistry::new();
     registry.register(VideoService::new(advertised.clone()));
     registry.register(AudioService::new(Box::new(media_mixer)));
@@ -253,42 +348,9 @@ async fn main() -> anyhow::Result<()> {
     registry.register(AudioService::new(Box::new(system_mixer)));
     registry.register(InputService::new(pointer_sink));
 
-    match args.transport {
-        TransportChoice::Tcp => {
-            tracing::info!(target = %args.target, "TCP: connecting to head unit");
-            let stream = TcpStream::connect(&args.target).await?;
-            tracing::info!("TCP connection established");
-            let transport = TcpTransport::new(stream);
-            Connection::new(transport, registry, frame_rx, video_start_tx, advertised)
-                .run()
-                .await?;
-        }
-        TransportChoice::Usb => {
-            #[cfg(target_os = "linux")]
-            {
-                use aap_transport::UsbTransport;
-                tracing::info!(
-                    "USB: starting AOAP handshake — plug the USB cable into the head unit"
-                );
-                flight_log("main: about to call UsbTransport::connect()");
-                let transport = UsbTransport::connect().await?;
-                flight_log("main: UsbTransport::connect() returned Ok");
-                Connection::new(transport, registry, frame_rx, video_start_tx, advertised)
-                    .run()
-                    .await?;
-                flight_log("main: Connection::run() returned");
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                anyhow::bail!(
-                    "--transport usb is only supported on Linux \
-                     (FunctionFS gadget requires the Linux USB gadget stack)"
-                );
-            }
-        }
-    }
-
-    tracing::info!("connection closed cleanly");
+    Connection::new(transport, registry, frame_rx, video_start_tx, advertised)
+        .run()
+        .await?;
     Ok(())
 }
 
