@@ -32,6 +32,16 @@ def _run(args: list[str], **kwargs) -> None:
     try:
         subprocess.run(args, check=True, **kwargs)
     except subprocess.CalledProcessError as exc:
+        # When the caller passed capture_output=True, the subprocess's
+        # stdout/stderr never reached the terminal — flush them here so the
+        # actual failure (not just the exit code) shows up immediately.
+        for stream in (exc.stdout, exc.stderr):
+            if not stream:
+                continue
+            text = stream.decode(errors="replace") if isinstance(stream, bytes) else stream
+            sys.stderr.write(text)
+            if not text.endswith("\n"):
+                sys.stderr.write("\n")
         print(f"\nERROR: command failed (exit {exc.returncode})", file=sys.stderr)
         raise SystemExit(1) from exc
 
