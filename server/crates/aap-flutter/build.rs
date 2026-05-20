@@ -409,8 +409,24 @@ fn ensure_engine_downloaded(sha: &str, url: &str, kind: ArtifactKind) -> Result<
         ArtifactKind::SharedLib => cache_dir.join("libflutter_engine.so"),
         ArtifactKind::Framework => cache_dir.join("FlutterEmbedder.framework/FlutterEmbedder"),
     };
-    if sentinel.exists() {
+    // For the Framework case the sentinel must be an actual symlink; an
+    // earlier extractor wrote the target path as a regular file, leaving a
+    // corrupted cache that breaks the linker. Treat that as cache-invalid
+    // and re-extract.
+    let cache_healthy = sentinel.exists()
+        && match kind {
+            ArtifactKind::SharedLib => true,
+            ArtifactKind::Framework => sentinel
+                .symlink_metadata()
+                .map(|m| m.file_type().is_symlink())
+                .unwrap_or(false),
+        };
+    if cache_healthy {
         return Ok(cache_dir);
+    }
+    if kind == ArtifactKind::Framework {
+        // Wipe partial framework dir so re-extraction starts clean.
+        let _ = std::fs::remove_dir_all(cache_dir.join("FlutterEmbedder.framework"));
     }
     std::fs::create_dir_all(&cache_dir).map_err(|e| format!("mkdir {cache_dir:?}: {e}"))?;
 
@@ -489,6 +505,8 @@ fn extract_zip_flat(zip_path: &Path, dest: &Path, wanted: &[&str]) -> Result<(),
 /// directory layout. Used for the macOS framework, whose internal structure
 /// matters at link time.
 fn extract_zip_preserving_paths(zip_path: &Path, dest: &Path) -> Result<(), String> {
+    use std::io::Read;
+
     let file = std::fs::File::open(zip_path).map_err(|e| format!("open {zip_path:?}: {e}"))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("read zip: {e}"))?;
     for i in 0..archive.len() {
@@ -499,6 +517,16 @@ fn extract_zip_preserving_paths(zip_path: &Path, dest: &Path) -> Result<(), Stri
             continue;
         };
         let out_path = dest.join(rel);
+
+        // A macOS .framework is a tree of symlinks (FlutterEmbedder →
+        // Versions/Current/FlutterEmbedder → Versions/A/FlutterEmbedder).
+        // Writing the symlink *target* as a regular file leaves the linker
+        // with a few bytes of text where it expects a Mach-O — fatal.
+        let is_symlink = entry
+            .unix_mode()
+            .map(|m| (m & 0o170000) == 0o120000)
+            .unwrap_or(false);
+
         if entry.is_dir() {
             std::fs::create_dir_all(&out_path).map_err(|e| format!("mkdir {out_path:?}: {e}"))?;
             continue;
@@ -506,6 +534,23 @@ fn extract_zip_preserving_paths(zip_path: &Path, dest: &Path) -> Result<(), Stri
         if let Some(parent) = out_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {parent:?}: {e}"))?;
         }
+
+        if is_symlink {
+            let mut target = String::new();
+            entry
+                .read_to_string(&mut target)
+                .map_err(|e| format!("read symlink target for {out_path:?}: {e}"))?;
+            // Clear any stale file/dir left by a previous broken extraction.
+            let _ = std::fs::remove_file(&out_path);
+            let _ = std::fs::remove_dir_all(&out_path);
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&target, &out_path)
+                .map_err(|e| format!("symlink {out_path:?} -> {target:?}: {e}"))?;
+            #[cfg(not(unix))]
+            return Err("zip symlink extraction is unix-only".into());
+            continue;
+        }
+
         let mut out_file =
             std::fs::File::create(&out_path).map_err(|e| format!("create {out_path:?}: {e}"))?;
         std::io::copy(&mut entry, &mut out_file).map_err(|e| format!("write {out_path:?}: {e}"))?;
