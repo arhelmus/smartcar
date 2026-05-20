@@ -23,7 +23,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: subosito/flutter-action@v2
-        with: { channel: stable, cache: true }
+        with: { flutter-version: '3.41.9', channel: stable, cache: true }
       - run: flutter pub get --enforce-lockfile
         working-directory: ${{ matrix.project }}
       - run: dart format --output=none --set-exit-if-changed .
@@ -41,7 +41,7 @@ jobs:
         with: { distribution: zulu, java-version: '17' }
       - uses: gradle/actions/setup-gradle@v4
       - uses: subosito/flutter-action@v2
-        with: { channel: stable, cache: true }
+        with: { flutter-version: '3.41.9', channel: stable, cache: true }
       - run: flutter pub get --enforce-lockfile
         working-directory: mobile
       - run: flutter build apk --debug --no-shrink
@@ -52,7 +52,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: subosito/flutter-action@v2
-        with: { channel: stable, cache: true }
+        with: { flutter-version: '3.41.9', channel: stable, cache: true }
       - run: flutter pub get --enforce-lockfile
         working-directory: mobile
       - run: flutter build ios --no-codesign --debug
@@ -64,7 +64,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: subosito/flutter-action@v2
-        with: { channel: stable, cache: true }
+        with: { flutter-version: '3.41.9', channel: stable, cache: true }
       - run: flutter pub get --enforce-lockfile
         working-directory: server/flutter-ui
       - run: flutter build bundle --release
