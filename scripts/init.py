@@ -251,7 +251,15 @@ def _patch_openauto() -> None:
         _run(["git", "-C", str(OPENAUTO_DIR), "apply", str(patch)])
 
     _run(["git", "-C", str(OPENAUTO_DIR), "add", "-A"])
-    _run(["git", "-C", str(OPENAUTO_DIR), "commit", "-m", OPENAUTO_PATCH_COMMIT])
+    # Scope identity to this one commit so CI runners (no global git config)
+    # can still create it; the commit lives only in the submodule, never
+    # pushed, so any name/email is fine.
+    _run([
+        "git", "-C", str(OPENAUTO_DIR),
+        "-c", "user.name=smartcar init",
+        "-c", "user.email=init@smartcar.local",
+        "commit", "-m", OPENAUTO_PATCH_COMMIT,
+    ])
     print("  Patches committed locally.", file=sys.stderr)
 
 
