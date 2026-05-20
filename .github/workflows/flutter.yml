@@ -1,0 +1,71 @@
+name: flutter
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Two Flutter projects live in the repo:
+#   - mobile/             — phone-side app (iOS + Android)
+#   - server/flutter-ui/  — head-unit UI embedded in smartcar-server via aap-flutter
+#
+# Shared Dart hygiene (format / analyze / test) runs in one matrix job; the
+# heavyweight per-platform builds get their own jobs so a Linux-only failure
+# doesn't burn a macOS runner minute.
+
+jobs:
+  dart:
+    name: dart (${{ matrix.project }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project: [mobile, server/flutter-ui]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable, cache: true }
+      - run: flutter pub get --enforce-lockfile
+        working-directory: ${{ matrix.project }}
+      - run: dart format --output=none --set-exit-if-changed .
+        working-directory: ${{ matrix.project }}
+      - run: flutter analyze
+        working-directory: ${{ matrix.project }}
+      - run: flutter test
+        working-directory: ${{ matrix.project }}
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v4
+        with: { distribution: zulu, java-version: '17' }
+      - uses: gradle/actions/setup-gradle@v4
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable, cache: true }
+      - run: flutter pub get --enforce-lockfile
+        working-directory: mobile
+      - run: flutter build apk --debug --no-shrink
+        working-directory: mobile
+
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable, cache: true }
+      - run: flutter pub get --enforce-lockfile
+        working-directory: mobile
+      - run: flutter build ios --no-codesign --debug
+        working-directory: mobile
+
+  embed-bundle:
+    name: embed (flutter build bundle)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable, cache: true }
+      - run: flutter pub get --enforce-lockfile
+        working-directory: server/flutter-ui
+      - run: flutter build bundle --release
+        working-directory: server/flutter-ui
