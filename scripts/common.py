@@ -45,6 +45,24 @@ def _load_env_local() -> None:
 _load_env_local()
 
 
+def _require_env(key: str) -> str:
+    """Return env[key] stripped, or die loud if it is unset / blank.
+
+    .env.local is the single source of truth for board / link config; the
+    scripts don't carry built-in defaults so a missing key never silently
+    points at the wrong host or interface.
+    """
+    value = os.environ.get(key, "").strip()
+    if not value:
+        print(
+            f"ERROR: {key} not set — add it to .env.local "
+            "(see .env.local.example).",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    return value
+
+
 # ── Local server lifecycle ───────────────────────────────────────────────────
 
 def stop_local_server() -> None:
@@ -127,14 +145,11 @@ def laptop_usb_ip() -> str:
     BOARD_MAC is the host-side MAC the board's g_ether gadget advertises
     (`/etc/modprobe.d/g_ether.conf` → `host_addr`), so it identifies which of
     the laptop's interfaces is the USB link to the board regardless of the
-    rotating `enX` name macOS assigns it. Returns an empty string when the
-    var is unset or no matching interface is found — the caller decides
-    whether that's fatal.
+    rotating `enX` name macOS assigns it. Aborts if BOARD_MAC is unset;
+    returns an empty string when no matching interface is found (caller
+    decides whether that's fatal).
     """
-    mac = os.environ.get("BOARD_MAC", "").strip()
-    if not mac:
-        return ""
-    return _find_ip_by_mac(mac)
+    return _find_ip_by_mac(_require_env("BOARD_MAC"))
 
 
 # ── Board USB-Ethernet IP assignment ─────────────────────────────────────────
@@ -167,12 +182,9 @@ def assign_board_ip(check: bool = False) -> int:
     With *check* only reports the current state. Returns 0 on success /
     nothing to do, non-zero on error.
     """
-    ip = os.environ.get("LAPTOP_HOST", "10.55.0.2").strip()
+    ip = _require_env("LAPTOP_HOST")
     mask = "24"
-    mac = (os.environ.get("BOARD_MAC") or "").strip()
-    if not mac:
-        print("ERROR: BOARD_MAC not set — add it to .env.local.", file=sys.stderr)
-        return 1
+    mac = _require_env("BOARD_MAC")
 
     iface = _find_iface_by_mac(mac)
     if not iface:
@@ -206,8 +218,8 @@ def assign_board_ip(check: bool = False) -> int:
 
 CROSS_TARGET = "aarch64-unknown-linux-gnu"
 
-BOARD_HOST = os.environ.get("BOARD_HOST", "10.55.0.1")
-BOARD_USER = os.environ.get("BOARD_USER", "root")
+BOARD_HOST = _require_env("BOARD_HOST")
+BOARD_USER = _require_env("BOARD_USER")
 
 BOARD_SERVER_BINARY = "/usr/local/bin/smartcar-server"
 BOARD_PID_FILE      = "/tmp/smartcar-server.pid"
