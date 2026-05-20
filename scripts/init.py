@@ -112,6 +112,22 @@ def _check_cargo_audit() -> None:
     _run(["cargo", "install", "cargo-audit"])
 
 
+def _check_env_local() -> None:
+    print("Checking .env.local …", file=sys.stderr)
+    target = REPO_ROOT / ".env.local"
+    template = REPO_ROOT / ".env.local.example"
+    if target.exists():
+        print("  .env.local OK.", file=sys.stderr)
+        return
+    if not template.exists():
+        print("  WARNING: .env.local.example missing — skipping.", file=sys.stderr)
+        return
+    shutil.copy(template, target)
+    print(f"  Created .env.local from {template.name}.", file=sys.stderr)
+    print("  Edit .env.local to fill in your local values (BOARD_HOST, LAPTOP_USB_MAC, …).",
+          file=sys.stderr)
+
+
 def _check_certs() -> None:
     print("Checking TLS certificates …", file=sys.stderr)
     key = CERTS_DIR / "server.key"
@@ -191,6 +207,7 @@ def main() -> int:
     _check_cargo()
     _check_cargo_audit()
     _check_cross()
+    _check_env_local()
     _check_certs()
     _setup_git_hooks()
     print("\nInit complete.", file=sys.stderr)
