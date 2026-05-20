@@ -3,7 +3,15 @@
 
 Run once after cloning:
     make init
+
+Bump `INIT_VERSION` whenever init.py grows a new step (new prerequisite,
+new patch, changed seed). `common.py` imports this constant and refuses
+to run if `scripts/.init` records an older value, prompting the user to
+re-run `make init`.
 """
+
+# Bump whenever init.py changes meaningfully.
+INIT_VERSION = 1
 
 import shutil
 import subprocess
@@ -11,6 +19,8 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+SCRIPTS_DIR = Path(__file__).resolve().parent
+INIT_STAMP = SCRIPTS_DIR / ".init"
 CERTS_DIR = REPO_ROOT / "server" / "certs"
 OPENAUTO_DIR = REPO_ROOT / "server" / "third_party" / "openauto"
 PATCHES_DIR = REPO_ROOT / "scripts" / "patches" / "openauto"
@@ -199,6 +209,12 @@ def _quiet_openauto_pointer() -> None:
     print("  submodule.server/third_party/openauto.ignore = all", file=sys.stderr)
 
 
+def _write_init_stamp() -> None:
+    print("Writing init stamp …", file=sys.stderr)
+    INIT_STAMP.write_text(f"{INIT_VERSION}\n")
+    print(f"  scripts/.init = v{INIT_VERSION}", file=sys.stderr)
+
+
 def main() -> int:
     _check_nix()
     _check_submodules()
@@ -210,6 +226,7 @@ def main() -> int:
     _check_env_local()
     _check_certs()
     _setup_git_hooks()
+    _write_init_stamp()
     print("\nInit complete.", file=sys.stderr)
     return 0
 

@@ -19,6 +19,9 @@ server/certs/*.pem
 # local environment (personal IPs, MACs — never commit)
 .env.local
 
+# init.py stamp — generated per clone, not committed
+scripts/.init
+
 # run_server detached-mode artifacts
 .smartcar-server.pid
 *.log

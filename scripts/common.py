@@ -45,6 +45,40 @@ def _load_env_local() -> None:
 _load_env_local()
 
 
+# ── make-init freshness check ────────────────────────────────────────────────
+
+def _check_init_stamp() -> None:
+    """Verify scripts/.init records the current init.py version.
+
+    Catches the "I pulled main but forgot to re-run make init" case where
+    init.py grew a new step (a prerequisite, a patch, a seeded file) that
+    later scripts now assume. Importing `common` from anywhere triggers
+    this — runs before any other check so the failure mode is the actionable
+    one ("run make init") and not a downstream symptom.
+    """
+    from init import INIT_VERSION  # canonical version lives in init.py
+
+    stamp = REPO_ROOT / "scripts" / ".init"
+    try:
+        recorded = stamp.read_text().strip()
+    except FileNotFoundError:
+        print(
+            f"ERROR: scripts/.init missing — run `make init` "
+            f"(init.py is at v{INIT_VERSION}).",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    if recorded != str(INIT_VERSION):
+        print(
+            f"ERROR: scripts/.init is stale (records v{recorded}, init.py is "
+            f"at v{INIT_VERSION}) — re-run `make init`.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+_check_init_stamp()
+
+
 def _require_env(key: str) -> str:
     """Return env[key] stripped, or die loud if it is unset / blank.
 
