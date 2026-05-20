@@ -245,8 +245,18 @@ def assign_board_ip(check: bool = False) -> int:
 
 CROSS_TARGET = "aarch64-unknown-linux-gnu"
 
-BOARD_HOST = _require_env("BOARD_HOST")
-BOARD_USER = _require_env("BOARD_USER")
+# BOARD_HOST / BOARD_USER are resolved lazily via __getattr__ below so that
+# importing `common` from board-agnostic scripts (e.g. review.py) doesn't
+# require those envs to be set. Reads of common.BOARD_HOST still fail-fast
+# via _require_env when the consumer actually accesses them.
+_LAZY_BOARD_ENV = {"BOARD_HOST", "BOARD_USER"}
+
+
+def __getattr__(name: str) -> str:
+    if name in _LAZY_BOARD_ENV:
+        return _require_env(name)
+    raise AttributeError(name)
+
 
 BOARD_SERVER_BINARY = "/usr/local/bin/smartcar-server"
 BOARD_PID_FILE      = "/tmp/smartcar-server.pid"

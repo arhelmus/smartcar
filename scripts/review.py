@@ -36,6 +36,10 @@ import tempfile
 from pathlib import Path
 from typing import Callable
 
+# Pull in .env.local (CARGO_TARGET_DIR especially — keeps the cross artifacts
+# in the shared dir across checkouts) and trigger the init-stamp guard.
+import common  # noqa: F401
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SERVER = REPO_ROOT / "server"
 MOBILE = REPO_ROOT / "mobile"
