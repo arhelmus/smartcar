@@ -115,7 +115,10 @@ async fn reader_loop(
                 }
                 Err(e) => warn!(error = %e, "bridge: invalid ControlRequest"),
             },
-            other => warn!(frame_type = other, "bridge: unexpected frame type from client"),
+            other => warn!(
+                frame_type = other,
+                "bridge: unexpected frame type from client"
+            ),
         }
     }
 }
@@ -170,7 +173,11 @@ where
         anyhow::bail!("bridge: tcp frame with zero length");
     }
     if len > MAX_FRAME_SIZE {
-        anyhow::bail!("bridge: tcp frame length {} exceeds {}", len, MAX_FRAME_SIZE);
+        anyhow::bail!(
+            "bridge: tcp frame length {} exceeds {}",
+            len,
+            MAX_FRAME_SIZE
+        );
     }
     let mut frame = vec![0u8; len];
     r.read_exact(&mut frame).await?;

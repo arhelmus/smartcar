@@ -114,15 +114,14 @@ async fn main() -> anyhow::Result<()> {
     //   --bridge none → disabled
     // Commands are logged for now; future wiring will route them to Flutter,
     // audio session, and the PAN watcher.
-    let bridge_transport = match args.bridge {
-        BridgeChoice::Tcp => BridgeTransport::Tcp(
-            args.bridge_addr.parse().map_err(|e| {
+    let bridge_transport =
+        match args.bridge {
+            BridgeChoice::Tcp => BridgeTransport::Tcp(args.bridge_addr.parse().map_err(|e| {
                 anyhow::anyhow!("invalid --bridge-addr '{}': {}", args.bridge_addr, e)
-            })?,
-        ),
-        BridgeChoice::Ble => BridgeTransport::Ble,
-        BridgeChoice::None => BridgeTransport::None,
-    };
+            })?),
+            BridgeChoice::Ble => BridgeTransport::Ble,
+            BridgeChoice::None => BridgeTransport::None,
+        };
     spawn_bridge(bridge_transport);
 
     // ── Video frame channel + focus gate ──────────────────────────────────────
