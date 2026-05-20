@@ -26,11 +26,13 @@
 mod decoder;
 mod engine;
 mod ffi;
+mod lib_loader;
 mod producer;
 mod sink;
 mod texture;
 
 pub use engine::{FlutterEngineHandle, FlutterPointerInput};
+pub use lib_loader::FlutterLib;
 pub use producer::FlutterVideoProducer;
 pub use sink::FlutterSink;
 pub use texture::{new_store, SharedPixelStore};
@@ -47,6 +49,12 @@ pub const DEFAULT_ASSETS_DIR: &str = env!("FLUTTER_ASSETS_DIR");
 /// `$FLUTTER_ENGINE_LIB_DIR/icudtl.dat` → Flutter SDK artifact cache.
 /// Empty string when none of the above were found at build time.
 pub const DEFAULT_ICU_DATA: &str = env!("FLUTTER_ICU_DATA");
+
+/// Absolute path to `libflutter_engine.so` as resolved by `build.rs`.
+///
+/// Used by [`resolve_engine_lib`] as a fallback when there is no engine
+/// next to the running binary (the dev `cargo run` case on macOS).
+pub const DEFAULT_ENGINE_LIB: &str = env!("FLUTTER_ENGINE_LIB_PATH");
 
 /// Resolve `(flutter_assets_dir, icudtl_dat)` paths at runtime.
 ///
@@ -79,4 +87,35 @@ pub fn resolve_flutter_paths() -> (std::path::PathBuf, std::path::PathBuf) {
         .unwrap_or_else(|_| std::path::PathBuf::from(DEFAULT_ICU_DATA));
 
     (assets, icu)
+}
+
+/// Resolve the path to `libflutter_engine.so` for runtime `dlopen`.
+///
+/// Search order — first match wins:
+///
+/// 1. **`FLUTTER_ENGINE_LIB` env var** at runtime (escape hatch for tests
+///    pointing at a custom engine build).
+/// 2. **Next to the running binary** — `build.rs` stages the engine .so
+///    into `target/<profile>/` alongside the executable.  The same file is
+///    rsynced next to the board's `/usr/local/bin/smartcar-server`.
+/// 3. **Compile-time default** — absolute path baked in by `build.rs`
+///    (works for `cargo run` on the dev host).
+pub fn resolve_engine_lib() -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("FLUTTER_ENGINE_LIB") {
+        return std::path::PathBuf::from(p);
+    }
+    let so_name = if cfg!(target_os = "macos") {
+        "libflutter_engine.dylib"
+    } else {
+        "libflutter_engine.so"
+    };
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join(so_name);
+            if p.exists() {
+                return p;
+            }
+        }
+    }
+    std::path::PathBuf::from(DEFAULT_ENGINE_LIB)
 }

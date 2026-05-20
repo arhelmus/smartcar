@@ -4,11 +4,6 @@ version     = "0.1.0"
 edition.workspace      = true
 license.workspace      = true
 rust-version.workspace = true
-# Marks this as the sole owner of the Flutter engine native lib and lets the
-# build script publish `cargo:` metadata (e.g. enginedir) to the binary crate's
-# build script via DEP_FLUTTER_ENGINE_* — needed to set the binary's rpath,
-# which a library build script's rustc-link-arg cannot do.
-links       = "flutter_engine"
 
 [dependencies]
 aap-video   = { path = "../aap-video" }
@@ -18,6 +13,10 @@ tracing     = { workspace = true }
 anyhow      = { workspace = true }
 openh264    = "0.8"
 parking_lot = "0.12"
+# Runtime dlopen of libflutter_engine.so so the 96 MB mmap + C++ static
+# initialisers happen *after* the USB gadget is on the bus, not during the
+# binary's pre-main() phase. See src/lib_loader.rs.
+libloading  = "0.8"
 
 # Extract the downloaded linux-arm64 engine zip from build.rs without
 # depending on a system `unzip` binary (the cross container doesn't ship one).

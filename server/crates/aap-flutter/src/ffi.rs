@@ -91,19 +91,46 @@ impl FlutterRendererConfig {
 
 // ── Project args ──────────────────────────────────────────────────────────────
 
-/// Minimal `FlutterProjectArgs`.
+/// Subset of the embedder's `FlutterProjectArgs` that we set.
 ///
-/// `struct_size` tells the engine how many bytes of this struct are valid.
-/// Fields beyond `icu_data_path` are implicitly zero (null / disabled) because
-/// the engine guards each field with a `struct_size` range check.
+/// `struct_size` tells the engine how many bytes of this struct are valid;
+/// fields not present here are skipped by the engine's range check.
+///
+/// We declare the four AOT snapshot pointer fields because the engine's
+/// "infer VM snapshot from settings" path fails when libflutter is loaded
+/// via `dlopen` on macOS — passing the symbol addresses explicitly (looked
+/// up from the engine library's own symbol table; see
+/// [`FlutterLib`](crate::lib_loader::FlutterLib)) bypasses inference.
+/// `command_line_argc/argv` and `platform_message_callback` sit between
+/// `icu_data_path` and `vm_snapshot_data` in the real `FlutterProjectArgs`,
+/// so we keep their slots (filled with zero/null) to land the snapshot
+/// fields at the correct offset.
 #[repr(C)]
 pub struct FlutterProjectArgs {
-    /// Must equal `size_of::<FlutterProjectArgs>()`.
+    /// Must equal `size_of::<FlutterProjectArgs>()` so the embedder reads
+    /// all the way through `isolate_snapshot_instructions_size`.
     pub struct_size: usize,
     /// Path to the compiled Flutter asset bundle directory (`flutter_assets/`).
     pub assets_path: *const c_char,
     /// Path to `icudtl.dat` (ICU data file shipped with the Flutter engine).
     pub icu_data_path: *const c_char,
+    /// We don't pass extra args.
+    pub command_line_argc: c_int,
+    pub command_line_argv: *const *const c_char,
+    /// We don't handle platform messages.
+    pub platform_message_callback: *mut c_void,
+    /// AOT VM snapshot data symbol pointer; NULL → engine falls back to
+    /// settings inference (which is what fails under `dlopen` on macOS).
+    pub vm_snapshot_data: *const u8,
+    /// 0 is permitted when `vm_snapshot_data` is a symbol reference (per the
+    /// embedder header).
+    pub vm_snapshot_data_size: usize,
+    pub vm_snapshot_instructions: *const u8,
+    pub vm_snapshot_instructions_size: usize,
+    pub isolate_snapshot_data: *const u8,
+    pub isolate_snapshot_data_size: usize,
+    pub isolate_snapshot_instructions: *const u8,
+    pub isolate_snapshot_instructions_size: usize,
 }
 
 impl FlutterProjectArgs {
@@ -112,7 +139,38 @@ impl FlutterProjectArgs {
             struct_size: std::mem::size_of::<Self>(),
             assets_path,
             icu_data_path,
+            command_line_argc: 0,
+            command_line_argv: std::ptr::null(),
+            platform_message_callback: std::ptr::null_mut(),
+            vm_snapshot_data: std::ptr::null(),
+            vm_snapshot_data_size: 0,
+            vm_snapshot_instructions: std::ptr::null(),
+            vm_snapshot_instructions_size: 0,
+            isolate_snapshot_data: std::ptr::null(),
+            isolate_snapshot_data_size: 0,
+            isolate_snapshot_instructions: std::ptr::null(),
+            isolate_snapshot_instructions_size: 0,
         }
+    }
+
+    /// Fill the AOT snapshot fields from a [`FlutterLib`].
+    ///
+    /// `size = 0` is explicitly permitted when the pointer is a symbol
+    /// reference (per the embedder header documentation on each size field).
+    pub fn with_aot_snapshots(mut self, lib: &crate::lib_loader::FlutterLib) -> Self {
+        if let Some(p) = lib.vm_snapshot_data {
+            self.vm_snapshot_data = p;
+        }
+        if let Some(p) = lib.vm_snapshot_instructions {
+            self.vm_snapshot_instructions = p;
+        }
+        if let Some(p) = lib.isolate_snapshot_data {
+            self.isolate_snapshot_data = p;
+        }
+        if let Some(p) = lib.isolate_snapshot_instructions {
+            self.isolate_snapshot_instructions = p;
+        }
+        self
     }
 }
 
@@ -218,72 +276,7 @@ pub struct FlutterPointerEvent {
     pub buttons: i64,
 }
 
-// ── Engine entry points ───────────────────────────────────────────────────────
-
-unsafe extern "C" {
-    /// Initialise and run the Flutter engine.
-    ///
-    /// `version` must equal [`FLUTTER_ENGINE_VERSION`].
-    /// `user_data` is passed through to all embedder callbacks unchanged.
-    pub fn FlutterEngineRun(
-        version: usize,
-        config: *const FlutterRendererConfig,
-        args: *const FlutterProjectArgs,
-        user_data: *mut c_void,
-        engine_out: *mut FlutterEngine,
-    ) -> FlutterEngineResult;
-
-    /// Shut down the engine and release all resources.
-    pub fn FlutterEngineShutdown(engine: FlutterEngine) -> FlutterEngineResult;
-
-    /// Send `events_count` pointer events to the engine.
-    ///
-    /// Thread-safe per the embedder contract (callable from any thread).
-    pub fn FlutterEngineSendPointerEvent(
-        engine: FlutterEngine,
-        events: *const FlutterPointerEvent,
-        events_count: usize,
-    ) -> FlutterEngineResult;
-
-    /// Notify the engine of the render-surface size.
-    ///
-    /// Must be called once after [`FlutterEngineRun`]; the engine produces no
-    /// frames until it has non-zero window metrics.
-    pub fn FlutterEngineSendWindowMetricsEvent(
-        engine: FlutterEngine,
-        event: *const FlutterWindowMetricsEvent,
-    ) -> FlutterEngineResult;
-
-    /// Register an external texture with `texture_id`.
-    ///
-    /// The engine will call the `texture_frame_callback` (set in
-    /// `FlutterProjectArgs`) to populate each frame.
-    pub fn FlutterEngineRegisterExternalTexture(
-        engine: FlutterEngine,
-        texture_id: i64,
-    ) -> FlutterEngineResult;
-
-    /// Unregister a previously registered external texture.
-    pub fn FlutterEngineUnregisterExternalTexture(
-        engine: FlutterEngine,
-        texture_id: i64,
-    ) -> FlutterEngineResult;
-
-    /// Signal that a new frame is ready for `texture_id`.
-    ///
-    /// The engine will call the texture frame callback on the next render cycle.
-    pub fn FlutterEngineMarkExternalTextureFrameAvailable(
-        engine: FlutterEngine,
-        texture_id: i64,
-    ) -> FlutterEngineResult;
-
-    /// Notify the engine of a display vsync event.
-    ///
-    /// `baton` is the value delivered by the engine's vsync-request callback.
-    pub fn FlutterEngineOnVsync(
-        engine: FlutterEngine,
-        baton: isize,
-        frame_start_time_nanos: u64,
-        frame_target_time_nanos: u64,
-    ) -> FlutterEngineResult;
-}
+// Engine entry points are not declared here — they live as typed function-
+// pointer fields on `FlutterLib` (see `lib_loader.rs`) and are resolved via
+// `dlopen` at runtime so the 96 MB libflutter_engine.so is not in the
+// binary's DT_NEEDED list.  See that module for the argument signatures.

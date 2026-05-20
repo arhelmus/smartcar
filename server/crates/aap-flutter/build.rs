@@ -261,37 +261,38 @@ fn target_is_macos() -> bool {
     std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")
 }
 
-/// Emit link-search + link-lib for the directory holding the engine, and bake
-/// the rpath(s) so the binary finds it at runtime.
+/// Bake the absolute path to the Flutter engine binary as a compile-time env
+/// (`FLUTTER_ENGINE_LIB_PATH`) and stage it next to the deployed binary on
+/// Linux.
 ///
-/// * **Linux** — `dylib=flutter_engine`; rpath `$ORIGIN` (deployed binary
-///   finds the `.so` rsynced alongside it) plus the absolute cache path
-///   (local `cargo run` works with no `LD_LIBRARY_PATH`); the `.so` is also
-///   staged next to the binary for the board deploy step.
-/// * **macOS** — `framework=FlutterEmbedder`; rpath = the cache dir, which is
-///   what dyld needs to resolve the framework's
-///   `@rpath/FlutterEmbedder.framework/...` install name (dev host only, no
-///   deploy).
+/// We **do not** emit `cargo:rustc-link-lib` — libflutter is loaded via
+/// `dlopen` at runtime (see `lib_loader.rs`).  That keeps `libflutter_engine`
+/// out of the executable's `DT_NEEDED` list so the dynamic linker doesn't
+/// `mmap` the 96 MB during pre-`main()`, which is what was killing car-mode
+/// boots on the board.
 ///
-/// `link-search`/`link-lib` propagate to the binary's final link, but
-/// `rustc-link-arg` does **not** reach *dependents* — so the resolved dir is
-/// also published as `cargo:` metadata (`DEP_FLUTTER_ENGINE_ENGINEDIR`) and
-/// smartcar-server's build script emits the rpath for the binary.  The
-/// `rustc-link-arg` rpath here still applies to *this* crate's own test/bench
-/// executables (which link the engine and would otherwise fail dyld at start).
+/// * **Linux** — `<dir>/libflutter_engine.so`.  Copied next to the compiled
+///   binary by `copy_engine_to_target` so a deployed
+///   `/usr/local/bin/smartcar-server` finds it via `$ORIGIN`-style lookup
+///   (`resolve_engine_lib` in lib.rs).
+/// * **macOS** — `<dir>/FlutterEmbedder.framework/FlutterEmbedder` (dev host
+///   only, no deploy).
 fn emit_engine_link(dir: &Path) {
-    if target_is_macos() {
-        println!("cargo:rustc-link-search=framework={}", dir.display());
-        println!("cargo:rustc-link-lib=framework=FlutterEmbedder");
+    let lib_path = if target_is_macos() {
+        // dlopen needs the binary file inside the framework (the bundle
+        // directory itself is rejected with "not a file"). Bundle resource
+        // lookup (e.g. Resources/icudtl.dat) is recovered by also baking
+        // FLUTTER_ICU_DATA — see the `find_icu_data` call below.
+        dir.join("FlutterEmbedder.framework")
+            .join("FlutterEmbedder")
     } else {
-        println!("cargo:rustc-link-search=native={}", dir.display());
-        println!("cargo:rustc-link-lib=dylib=flutter_engine");
         copy_engine_to_target(dir);
-    }
-    // For aap-flutter's own test/bench binaries (not propagated to dependents).
-    println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
-    // Consumed by smartcar-server/build.rs to set the binary rpath.
-    println!("cargo:enginedir={}", dir.display());
+        dir.join("libflutter_engine.so")
+    };
+    println!(
+        "cargo:rustc-env=FLUTTER_ENGINE_LIB_PATH={}",
+        lib_path.display()
+    );
 }
 
 /// Copy `libflutter_engine.so` into `target/<profile>/` so it sits next to the

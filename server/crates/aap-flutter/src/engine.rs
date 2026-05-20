@@ -14,12 +14,14 @@ use std::ffi::CString;
 use std::os::raw::c_void;
 use std::path::Path;
 use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::Arc;
 
 use anyhow::Context as _;
 
 use crate::ffi::{
     self, FlutterEngine, FlutterProjectArgs, FlutterRendererConfig, FlutterWindowMetricsEvent,
 };
+use crate::lib_loader::FlutterLib;
 use crate::texture::{PixelStore, SharedPixelStore};
 
 // ── Callback data ─────────────────────────────────────────────────────────────
@@ -100,6 +102,10 @@ unsafe impl Sync for RawEngine {}
 /// declaration order.
 pub struct FlutterEngineHandle {
     engine: RawEngine,
+    /// Holds the `dlopen`'d libflutter_engine.so and the typed fn pointers we
+    /// dispatch through.  Last in declaration order so the engine is shut
+    /// down via `FlutterEngineShutdown` *before* the library is unloaded.
+    lib: Arc<FlutterLib>,
     // Keep CStrings alive — the engine may reference the paths after init.
     _assets_cstr: CString,
     _icu_cstr: CString,
@@ -119,6 +125,7 @@ impl FlutterEngineHandle {
     /// After this call the engine is running and an external texture with
     /// id `0` is registered for the video stream.
     pub fn launch(
+        lib: Arc<FlutterLib>,
         assets_dir: &Path,
         icu_data: &Path,
         store: SharedPixelStore,
@@ -141,11 +148,12 @@ impl FlutterEngineHandle {
         let data_ptr = data.as_ref() as *const EngineCallbackData as *mut c_void;
 
         let renderer = FlutterRendererConfig::software(surface_present_callback);
-        let args = FlutterProjectArgs::new(assets_cstr.as_ptr(), icu_cstr.as_ptr());
+        let args = FlutterProjectArgs::new(assets_cstr.as_ptr(), icu_cstr.as_ptr())
+            .with_aot_snapshots(&lib);
 
         let mut raw: FlutterEngine = std::ptr::null_mut();
         let rc = unsafe {
-            ffi::FlutterEngineRun(
+            (lib.run)(
                 ffi::FLUTTER_ENGINE_VERSION,
                 &renderer,
                 &args,
@@ -159,8 +167,7 @@ impl FlutterEngineHandle {
                 "FlutterEngineRun failed (code {rc}).\n\
                  Ensure the Flutter project is built:\n  \
                  cd server/flutter-ui && flutter build bundle\n\
-                 and that FLUTTER_ENGINE_LIB_DIR points to a matching \
-                 libflutter_engine.so."
+                 and that libflutter_engine.so is next to the binary."
             );
         }
 
@@ -168,7 +175,7 @@ impl FlutterEngineHandle {
         data.engine.store(raw, Ordering::Release);
 
         // Register the video-stream external texture (id = 0).
-        let rc = unsafe { ffi::FlutterEngineRegisterExternalTexture(raw, 0) };
+        let rc = unsafe { (lib.register_external_texture)(raw, 0) };
         if rc != ffi::kSuccess {
             tracing::warn!(
                 code = rc,
@@ -180,6 +187,7 @@ impl FlutterEngineHandle {
         tracing::info!(?assets_dir, "Flutter engine running");
         Ok(Self {
             engine: RawEngine(raw),
+            lib,
             _assets_cstr: assets_cstr,
             _icu_cstr: icu_cstr,
             _data: data,
@@ -198,7 +206,7 @@ impl FlutterEngineHandle {
         pixel_ratio: f64,
     ) -> anyhow::Result<()> {
         let event = FlutterWindowMetricsEvent::new(width as usize, height as usize, pixel_ratio);
-        let rc = unsafe { ffi::FlutterEngineSendWindowMetricsEvent(self.engine.0, &event) };
+        let rc = unsafe { (self.lib.send_window_metrics_event)(self.engine.0, &event) };
         if rc != ffi::kSuccess {
             anyhow::bail!("FlutterEngineSendWindowMetricsEvent failed (code {rc})");
         }
@@ -214,6 +222,7 @@ impl FlutterEngineHandle {
     pub fn pointer_input(&self) -> FlutterPointerInput {
         FlutterPointerInput {
             engine: self.engine.0,
+            lib: Arc::clone(&self.lib),
         }
     }
 
@@ -223,7 +232,7 @@ impl FlutterEngineHandle {
     /// into the [`SharedPixelStore`].  Thread-safe; the engine API is
     /// documented to allow calls from any thread.
     pub fn mark_texture_dirty(&self) {
-        let rc = unsafe { ffi::FlutterEngineMarkExternalTextureFrameAvailable(self.engine.0, 0) };
+        let rc = unsafe { (self.lib.mark_external_texture_frame_available)(self.engine.0, 0) };
         if rc != ffi::kSuccess {
             tracing::warn!(
                 code = rc,
@@ -243,6 +252,9 @@ impl FlutterEngineHandle {
 #[derive(Clone)]
 pub struct FlutterPointerInput {
     engine: FlutterEngine,
+    /// Holds the engine library alive for the lifetime of every clone of
+    /// this handle — the input service may outlive the producer thread.
+    lib: Arc<FlutterLib>,
 }
 
 // Safety: FlutterEngineSendPointerEvent is thread-safe per the embedder docs.
@@ -265,7 +277,7 @@ impl FlutterPointerInput {
             device_kind: ffi::kFlutterPointerDeviceKindTouch,
             buttons: 0,
         };
-        let rc = unsafe { ffi::FlutterEngineSendPointerEvent(self.engine, &ev, 1) };
+        let rc = unsafe { (self.lib.send_pointer_event)(self.engine, &ev, 1) };
         if rc != ffi::kSuccess {
             tracing::warn!(code = rc, "FlutterEngineSendPointerEvent failed");
         }
@@ -287,7 +299,7 @@ impl Drop for FlutterEngineHandle {
     fn drop(&mut self) {
         // Shut down the engine before freeing _data; the engine must not call
         // our callbacks after its data has been freed.
-        let rc = unsafe { ffi::FlutterEngineShutdown(self.engine.0) };
+        let rc = unsafe { (self.lib.shutdown)(self.engine.0) };
         if rc != ffi::kSuccess {
             tracing::warn!(code = rc, "FlutterEngineShutdown returned non-success");
         }

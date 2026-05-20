@@ -368,16 +368,29 @@ fn start_flutter_producers(
     video_start_rx: VideoStartRx,
 ) -> anyhow::Result<Arc<dyn PointerSink>> {
     use aap_flutter::{
-        new_store, resolve_flutter_paths, FlutterEngineHandle, FlutterVideoProducer,
+        new_store, resolve_engine_lib, resolve_flutter_paths, FlutterEngineHandle, FlutterLib,
+        FlutterVideoProducer,
     };
 
-    // Launch the engine now, but defer window-metrics/encoder sizing to the
-    // producer: the resolution isn't known until the head unit's
-    // AVChannelSetupResponse arrives, which the producer receives via the
+    // `dlopen` libflutter_engine.so. This is the slow step — 96 MB mmap +
+    // C++ static initialisers — but it's reached only after main() has
+    // already passed args/audio/video setup, so it no longer holds up
+    // pre-main() and the host has already seen our USB device (USB mode)
+    // / been connected to (TCP mode).
+    let engine_lib_path = resolve_engine_lib();
+    flight_log(&format!(
+        "main: loading libflutter_engine from {}",
+        engine_lib_path.display()
+    ));
+    let lib = unsafe { FlutterLib::load(&engine_lib_path) }?;
+    flight_log("main: libflutter_engine loaded");
+
+    // Launch the engine. Window-metrics/encoder sizing happens later in the
+    // producer once the head unit's AVChannelSetupResponse arrives via the
     // focus gate.
     let (assets, icu) = resolve_flutter_paths();
     let store = new_store();
-    let engine = FlutterEngineHandle::launch(&assets, &icu, store.clone())?;
+    let engine = FlutterEngineHandle::launch(lib, &assets, &icu, store.clone())?;
 
     // Grab a thread-safe pointer handle before the engine is moved into the
     // producer thread; it feeds head-unit touches to the UI.
