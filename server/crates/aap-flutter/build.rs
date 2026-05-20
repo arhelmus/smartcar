@@ -314,9 +314,30 @@ fn copy_engine_to_target(engine_dir: &Path) {
     }
 }
 
-/// The engine commit SHA, read verbatim from `<sdk>/bin/internal/engine.version`.
-/// The Google artifact bucket is keyed on exactly this value.
+/// The engine commit SHA. Resolution order:
+///
+///   1. `<crate>/engine.version` — pinned in the repo. This is the single
+///      source of truth across hosts and cross-compile containers (the cross
+///      container has no Flutter SDK, but this file is mounted with the
+///      workspace). Bump it when the project's Flutter SDK is updated.
+///   2. `<sdk>/bin/internal/engine.version` — fall back to the host SDK's
+///      pinned engine, for first-time setup or if the repo file is missing.
+///
+/// The Google artifact bucket is keyed on exactly this SHA.
 fn engine_sha(flutter_bin: Option<&Path>) -> Option<String> {
+    // 1. Repo-pinned SHA (preferred — works inside cross/Docker too).
+    let pinned = Path::new(&std::env::var("CARGO_MANIFEST_DIR").ok()?).join("engine.version");
+    if pinned.exists() {
+        println!("cargo:rerun-if-changed={}", pinned.display());
+        if let Ok(s) = std::fs::read_to_string(&pinned) {
+            let sha = s.trim().to_string();
+            if !sha.is_empty() {
+                return Some(sha);
+            }
+        }
+    }
+
+    // 2. Fall back to the host Flutter SDK's pinned engine.
     let flutter = flutter_bin?;
     // Resolve symlinks first: a PATH/Homebrew `flutter` is typically a shim
     // pointing into the real SDK (e.g. .../share/flutter/bin/flutter), so the
@@ -377,6 +398,10 @@ fn engine_artifact_url(sha: &str) -> Option<(String, ArtifactKind)> {
 ///
 /// Cached at `<target>/flutter-engine/<sha>/`: survives `cargo clean -p` and is
 /// re-used across profiles, so the download is one-time per engine bump.
+///
+/// Extraction uses the `zip` crate (build-dependency) rather than a system
+/// `unzip` binary — the cross-rs Docker image doesn't ship one, and pulling
+/// it via apt currently fails (broken sources list upstream).
 fn ensure_engine_downloaded(sha: &str, url: &str, kind: ArtifactKind) -> Result<PathBuf, String> {
     let cache_dir = engine_cache_dir(sha)?;
     // Sentinel proving the cache is already populated.
@@ -402,26 +427,20 @@ fn ensure_engine_downloaded(sha: &str, url: &str, kind: ArtifactKind) -> Result<
 
     match kind {
         ArtifactKind::SharedLib => {
-            // -j: flatten paths so the .so lands directly in cache_dir.
-            run(std::process::Command::new("unzip").args([
-                "-o",
-                "-j",
-                &zip_path.to_string_lossy(),
-                "libflutter_engine.so",
-                "-d",
-                &cache_dir.to_string_lossy(),
-            ]))?;
+            // Flatten paths: extract `libflutter_engine.so` (and, best-effort,
+            // `icudtl.dat`) directly into cache_dir so emit_engine_link finds
+            // them with no extra search logic.
+            extract_zip_flat(
+                &zip_path,
+                &cache_dir,
+                &["libflutter_engine.so", "icudtl.dat"],
+            )?;
         }
         ArtifactKind::Framework => {
             // The zip root *is* the framework's contents, so extract into a
-            // directory named FlutterEmbedder.framework (preserving symlinks).
+            // directory named FlutterEmbedder.framework.
             let fw = cache_dir.join("FlutterEmbedder.framework");
-            run(std::process::Command::new("unzip").args([
-                "-o",
-                &zip_path.to_string_lossy(),
-                "-d",
-                &fw.to_string_lossy(),
-            ]))?;
+            extract_zip_preserving_paths(&zip_path, &fw)?;
         }
     }
     let _ = std::fs::remove_file(&zip_path);
@@ -431,6 +450,67 @@ fn ensure_engine_downloaded(sha: &str, url: &str, kind: ArtifactKind) -> Result<
     } else {
         Err(format!("engine binary not found after unpacking {url}"))
     }
+}
+
+/// Extract `wanted` entries from `zip_path` into `dest`, ignoring directory
+/// structure (the basename lands directly in `dest`). Missing entries are
+/// best-effort: if `wanted[i]` isn't in the archive, it's silently skipped.
+/// At least one of `wanted` must extract successfully or an error is returned.
+fn extract_zip_flat(zip_path: &Path, dest: &Path, wanted: &[&str]) -> Result<(), String> {
+    let file = std::fs::File::open(zip_path).map_err(|e| format!("open {zip_path:?}: {e}"))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("read zip: {e}"))?;
+    let mut extracted_any = false;
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| format!("read entry {i}: {e}"))?;
+        let Some(name) = entry.enclosed_name() else {
+            continue;
+        };
+        let Some(basename) = name.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !wanted.contains(&basename) {
+            continue;
+        }
+        let out_path = dest.join(basename);
+        let mut out_file =
+            std::fs::File::create(&out_path).map_err(|e| format!("create {out_path:?}: {e}"))?;
+        std::io::copy(&mut entry, &mut out_file).map_err(|e| format!("write {out_path:?}: {e}"))?;
+        extracted_any = true;
+    }
+    if !extracted_any {
+        return Err(format!("none of {wanted:?} found in {zip_path:?}"));
+    }
+    Ok(())
+}
+
+/// Extract every entry of `zip_path` into `dest`, preserving the archive's
+/// directory layout. Used for the macOS framework, whose internal structure
+/// matters at link time.
+fn extract_zip_preserving_paths(zip_path: &Path, dest: &Path) -> Result<(), String> {
+    let file = std::fs::File::open(zip_path).map_err(|e| format!("open {zip_path:?}: {e}"))?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|e| format!("read zip: {e}"))?;
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| format!("read entry {i}: {e}"))?;
+        let Some(rel) = entry.enclosed_name() else {
+            continue;
+        };
+        let out_path = dest.join(rel);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out_path).map_err(|e| format!("mkdir {out_path:?}: {e}"))?;
+            continue;
+        }
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("mkdir {parent:?}: {e}"))?;
+        }
+        let mut out_file =
+            std::fs::File::create(&out_path).map_err(|e| format!("create {out_path:?}: {e}"))?;
+        std::io::copy(&mut entry, &mut out_file).map_err(|e| format!("write {out_path:?}: {e}"))?;
+    }
+    Ok(())
 }
 
 /// `<target>/flutter-engine/<sha>/`, derived from `OUT_DIR`
