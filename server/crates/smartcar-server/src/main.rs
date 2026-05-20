@@ -14,16 +14,16 @@
 //!
 //! # Frame producer selection
 //!
-//! Flutter is the **default** renderer.  `--testkit` forces the synthetic
-//! producers instead.  A binary built without `--features flutter`, or one
-//! where the Flutter engine fails to start, transparently falls back to the
-//! testkit producers at runtime (a warning is logged).
+//! Flutter is the **default** renderer.  `--testkit` explicitly opts in to
+//! the synthetic producers (deterministic bringup / CI).  A Flutter init
+//! failure is **fatal** — there is no implicit fallback — so missing engine
+//! assets or runtime errors surface immediately rather than silently
+//! degrading the user-visible UI to a test pattern.
 //!
-//! | Flag / build              | Video producer          | Audio producer      |
-//! |---------------------------|-------------------------|---------------------|
-//! | default                   | Flutter embedder        | (silent for now)    |
-//! | `--testkit`               | TestVideoProducer       | looping WAV mixers  |
-//! | default, no `flutter` feat| TestVideoProducer (fb)  | looping WAV mixers  |
+//! | Mode               | Video producer    | Audio producer       |
+//! |--------------------|-------------------|----------------------|
+//! | default (Flutter)  | Flutter embedder  | (silent for now)     |
+//! | `--testkit`        | TestVideoProducer | looping WAV mixers   |
 
 use std::sync::Arc;
 
@@ -97,50 +97,30 @@ async fn main() -> anyhow::Result<()> {
     let mut speech_mixer = MixerSink::<SpeechFmt>::new();
     let mut system_mixer = MixerSink::<SystemFmt>::new();
 
-    // Flutter is the default; --testkit forces the synthetic producers.
-    // If the Flutter renderer can't start (not compiled in, engine init
-    // failure), fall back to the testkit producers so the connection still
-    // comes up.
-    let mut run_testkit = args.testkit;
-    let mut gate = Some(video_start_rx);
-    // The Flutter embedder doubles as the pointer sink (head-unit touches
-    // drive its UI). When Flutter isn't running, touches are logged instead.
-    let mut flutter_pointer: Option<Arc<dyn PointerSink>> = None;
-    if !run_testkit {
-        let rx = gate.take().expect("gate present before producer selection");
-        match start_flutter_producers(frame_tx.clone(), rx) {
-            Ok(sink) => {
-                flutter_pointer = Some(sink);
-            }
-            Err((e, rx)) => {
-                tracing::warn!(
-                    error = %e,
-                    "Flutter renderer unavailable — falling back to testkit producers"
-                );
-                gate = Some(rx);
-                run_testkit = true;
-            }
-        }
-    }
-    if run_testkit {
+    // Producer selection: Flutter by default, testkit only when explicitly
+    // requested. A Flutter init failure propagates — no silent fallback —
+    // so a broken engine deployment fails loud instead of pretending to
+    // work with a test pattern.
+    let pointer_sink: Arc<dyn PointerSink> = if args.testkit {
         start_testkit_producers(
             frame_tx,
-            gate.expect("gate returned for testkit fallback"),
+            video_start_rx,
             &mut media_mixer,
             &mut speech_mixer,
             &mut system_mixer,
         )?;
-    }
+        // No real UI to receive touches; head-unit input is logged.
+        Arc::new(LogPointerSink)
+    } else {
+        // The Flutter embedder doubles as the pointer sink (touches drive its UI).
+        start_flutter_producers(frame_tx, video_start_rx)?
+    };
 
     // ── Transport + connection ────────────────────────────────────────────────
     // Build the negotiable config menu once; the descriptor (VideoService) and
     // the index resolver (Connection) must use the *same* list. Software-path
     // caps for now; the board GPU path will widen these.
     let advertised = advertise(&SOFTWARE_CAPS);
-
-    // Head-unit touches go to Flutter when it's running, else to the log.
-    let pointer_sink: Arc<dyn PointerSink> =
-        flutter_pointer.unwrap_or_else(|| Arc::new(LogPointerSink));
 
     let mut registry = ServiceRegistry::new();
     registry.register(VideoService::new(advertised.clone()));
@@ -221,13 +201,14 @@ fn start_testkit_producers(
 /// Start the Flutter renderer: launch the engine, point it at the AA video
 /// resolution, and spawn the encode loop that streams composited frames.
 ///
-/// On failure the `VideoStartRx` is handed back so the caller can fall back to
-/// the testkit producers (which need the focus gate).  Audio is silent for now
-/// — only the video path is wired.
+/// Returns the pointer sink so head-unit touches can drive the Flutter UI.
+/// Failure here is fatal: there is no fallback, and a broken engine deployment
+/// must surface immediately rather than silently degrade to a test pattern.
+/// Audio is silent for now — only the video path is wired.
 fn start_flutter_producers(
     frame_tx: aap_video::VideoFrameSender,
     video_start_rx: VideoStartRx,
-) -> Result<Arc<dyn PointerSink>, (anyhow::Error, VideoStartRx)> {
+) -> anyhow::Result<Arc<dyn PointerSink>> {
     use aap_flutter::{
         new_store, resolve_flutter_paths, FlutterEngineHandle, FlutterVideoProducer,
     };
@@ -235,27 +216,18 @@ fn start_flutter_producers(
     // Launch the engine now, but defer window-metrics/encoder sizing to the
     // producer: the resolution isn't known until the head unit's
     // AVChannelSetupResponse arrives, which the producer receives via the
-    // focus gate. Every fallible step here runs before the gate is consumed,
-    // so the rx can be returned intact for the testkit fallback.
-    let result = (|| -> anyhow::Result<(FlutterEngineHandle, _)> {
-        let (assets, icu) = resolve_flutter_paths();
-        let store = new_store();
-        let engine = FlutterEngineHandle::launch(&assets, &icu, store.clone())?;
-        Ok((engine, store))
-    })();
+    // focus gate.
+    let (assets, icu) = resolve_flutter_paths();
+    let store = new_store();
+    let engine = FlutterEngineHandle::launch(&assets, &icu, store.clone())?;
 
-    match result {
-        Ok((engine, store)) => {
-            // Grab a thread-safe pointer handle before the engine is moved
-            // into the producer thread; it feeds head-unit touches to the UI.
-            let pointer: Arc<dyn PointerSink> = Arc::new(engine.pointer_input());
-            tokio::task::spawn_blocking(move || {
-                // `engine` is moved into the producer so it outlives the encode
-                // loop and is shut down cleanly when the loop returns.
-                FlutterVideoProducer::new().run(store, frame_tx, video_start_rx, engine);
-            });
-            Ok(pointer)
-        }
-        Err(e) => Err((e, video_start_rx)),
-    }
+    // Grab a thread-safe pointer handle before the engine is moved into the
+    // producer thread; it feeds head-unit touches to the UI.
+    let pointer: Arc<dyn PointerSink> = Arc::new(engine.pointer_input());
+    tokio::task::spawn_blocking(move || {
+        // `engine` is moved into the producer so it outlives the encode loop
+        // and is shut down cleanly when the loop returns.
+        FlutterVideoProducer::new().run(store, frame_tx, video_start_rx, engine);
+    });
+    Ok(pointer)
 }
