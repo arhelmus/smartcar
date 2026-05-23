@@ -21,4 +21,4 @@ libloading  = "0.8"
 # Extract the downloaded linux-arm64 engine zip from build.rs without
 # depending on a system `unzip` binary (the cross container doesn't ship one).
 [build-dependencies]
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
