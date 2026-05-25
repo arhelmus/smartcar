@@ -104,18 +104,21 @@ sequence makes it dead weight. See `git log` for the rework.)
 | `/etc/modules-load.d/usb-gadget.conf` | Loads `libcomposite` only (registers the `usb_gadget` configfs subsystem). Intentionally **excludes** `g_ether` — that's gated by `g_ether-load.service` |
 | `/etc/modprobe.d/g_ether.conf` | Stable MAC addresses for `usb0` (board: `02:00:00:00:0a:01`, laptop: `02:00:00:00:0a:02`) |
 | `/etc/systemd/network/usb0.network` | Static IP `10.55.0.1/24` on `usb0` |
-| `/usr/local/bin/smartcar-server` | Deployed by `scripts/deploy_board.py` |
+| `/usr/local/bin/smartcar-server` | Deployed by `scripts/deploy.py` |
 
 ## Dev workflow
 
 **Laptop-side**: set the USB-Ethernet interface the Mac sees to `10.55.0.2/24`.
 
 ```bash
-# Deploy a new build to the board
-python3 scripts/deploy_board.py          # cross-compile + rsync
-
-# Run in TCP dev mode (laptop openauto, no USB cable to car)
-python3 scripts/run_board.py --laptop-ip 10.55.0.2
+# One-shot: cross-compile + rsync + ansible + systemd restart + healthcheck.
+# Requires assign_board.py to have run first (sudo) and the board to be in CAR mode.
+python3 scripts/deploy.py                        # full deploy (release)
+python3 scripts/deploy.py --check                # ansible --check --diff, no restart
+python3 scripts/deploy.py --skip-build           # use binary already on the board
+python3 scripts/deploy.py --runtime-args "--log debug --bridge tcp"
+                                                  # transient ExecStart override,
+                                                  # evaporates on reboot
 
 # To use USB car mode manually without the jumper:
 # SSH in, then:
@@ -150,7 +153,7 @@ ssh root@10.55.0.1 'mkdir -p /var/lib/smartcar && touch /var/lib/smartcar/car-mo
 Workflow for a Mac-host USB iteration (no car, no jumper, no walk, no
 power-cycle):
 
-1. `python3 scripts/deploy_board.py` — deploy a new binary in dev mode.
+1. `python3 scripts/deploy.py --skip-build` — re-apply ansible + restart (or `python3 scripts/deploy.py` to rebuild first).
 2. `python3 scripts/debug_usb_gadget.py` — trigger car-mode boot,
    wait ~60 s for the auto-revert, then print this iteration's
    `/var/log.hdd/smartcar-boot.log` section to the terminal.

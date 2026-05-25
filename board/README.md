@@ -17,7 +17,7 @@ Owned by this playbook:
 
 Not owned:
 - The `smartcar-server` binary, `libflutter_engine.so`, or `flutter_assets/`
-  — those are cross-compiled and pushed by `scripts/deploy_board.py`.
+  — those are cross-compiled and pushed by `scripts/deploy.py` (phase 1).
 - Armbian flashing, kernel, DTB, boot environment, U-Boot tweaks.
 - Bluetooth bring-up (planned — see `../docs/board-setup.md` §Bluetooth).
   The `bluetooth` role exists as a stub for that work.
@@ -32,21 +32,21 @@ Not owned:
 
 ## Usage
 
-Board addressing (`BOARD_HOST`, `BOARD_USER`, `BOARD_MAC`) comes from
-`../.env.local` — the same source the python run scripts use. The blessed
-entry point is `scripts/board_provision.py`, which loads `.env.local`
-before invoking `ansible-playbook`:
+Board addressing (`BOARD_HOST`, `BOARD_USER`, `BOARD_MAC`, `BOARD_MAC_DEV`)
+comes from `../.env.local` — the same source the python run scripts use.
+
+The blessed entry point is `scripts/deploy.py`, which runs ansible as
+phase 2 of its pipeline (after cross-build + rsync, before restart +
+healthcheck). See `python3 scripts/deploy.py --help`. Common shortcuts:
 
 ```bash
-# Dry-run with diffs.
-python3 scripts/board_provision.py -- --check --diff
-
-# Apply.
-python3 scripts/board_provision.py
-
-# Pass through ansible flags after `--`.
-python3 scripts/board_provision.py -- -l orangepi-dev --tags usb_gadget
+make deploy                       # full pipeline
+make deploy -- --check            # ansible --check --diff, no build/restart
+make deploy -- --skip-build       # use binary already on the board
 ```
+
+(The `--` is `make`'s own "end of options" marker; needed before flags
+starting with `-` so make doesn't try to interpret them as its own.)
 
 Direct `ansible-playbook` invocations work too, but you have to load
 `.env.local` first or the pre-task assert will fail:

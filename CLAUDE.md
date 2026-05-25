@@ -9,7 +9,7 @@ Key roles:
 - **`server/flutter-ui/`** — Flutter head-unit UI embedded in `smartcar-server` via `aap-flutter`.
 - **`mobile/`** — phone-side Flutter app (iOS + Android), talks to the board over the `aap-bridge` BLE control channel.
 - **`shell.nix`** — hermetic Nix environment that provides Qt5 / GStreamer / libblkid / OpenSSL for the native openauto build.
-- **`scripts/`** — Python orchestration (stdlib only): `init.py`, `build_openauto.py`, `run_openauto.py`, `run_server.py`, `run_board.py`, `deploy_board.py`, `review.py`.
+- **`scripts/`** — Python orchestration (stdlib only): `init.py`, `build_openauto.py`, `run_openauto.py`, `run_server.py`, `deploy.py` (cross-build + rsync + ansible + restart + healthcheck), `assign_board.py` (sudo; assigns the laptop's USB-Ethernet IP), `review.py`.
 - **`server/third_party/openauto`** — vendored `openauto` source, patched on `make init` from `scripts/patches/openauto/`.
 
 ## Running & testing locally

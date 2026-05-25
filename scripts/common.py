@@ -98,7 +98,7 @@ def stop_local_server() -> None:
 
     Reads SERVER_PID_FILE, SIGTERMs the process (escalating to SIGKILL after
     ~2 s), and removes the pid file.  No-op when nothing is running.  Used by
-    run_server.py before relaunching and by run_board.py so the laptop server
+    run_server.py before relaunching and by deploy.py so the laptop server
     does not contend with the board for the openauto connection.
     """
     if not SERVER_PID_FILE.exists():

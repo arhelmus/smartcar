@@ -9,7 +9,12 @@ StartLimitBurst=5
 [Service]
 Type=simple
 Environment=RUST_LOG={{ smartcar_rust_log }}
-ExecStart={{ smartcar_binary }} --transport usb{% if smartcar_extra_args %} {{ smartcar_extra_args }}{% endif %}
+# Optional transient runtime override written by scripts/deploy.py via
+# `--runtime-args`. /run is tmpfs — the file evaporates on reboot, never
+# persists. The leading '-' on EnvironmentFile makes it optional, so the
+# unit starts normally when no override is set.
+EnvironmentFile=-/run/smartcar-deploy/runtime.env
+ExecStart={{ smartcar_binary }} --transport usb{% if smartcar_extra_args %} {{ smartcar_extra_args }}{% endif %} $DEPLOY_EXTRA_ARGS
 Restart=on-failure
 RestartSec=5
 
