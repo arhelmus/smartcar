@@ -11,7 +11,7 @@ re-run `make init`.
 """
 
 # Bump whenever init.py changes meaningfully.
-INIT_VERSION = 5
+INIT_VERSION = 6
 
 import platform
 import shutil
@@ -26,6 +26,18 @@ CERTS_DIR = REPO_ROOT / "server" / "certs"
 OPENAUTO_DIR = REPO_ROOT / "server" / "third_party" / "openauto"
 PATCHES_DIR = REPO_ROOT / "scripts" / "patches" / "openauto"
 OPENAUTO_PATCH_COMMIT = "smartcar: macos patches"
+
+
+def _die(message: str) -> None:
+    """Print an ERROR + actionable hint and exit non-zero.
+
+    Used for prerequisites that downstream scripts (cargo build,
+    build_openauto, make deploy, review) hard-depend on. Soft warnings
+    that the user can legitimately ignore stay as `WARNING:` prints
+    without exiting.
+    """
+    print(f"  ERROR: {message}", file=sys.stderr)
+    raise SystemExit(1)
 
 
 def _run(args: list[str], **kwargs) -> None:
@@ -48,20 +60,27 @@ def _run(args: list[str], **kwargs) -> None:
 
 
 def _check_nix() -> None:
+    # openauto builds via shell.nix on macOS; on Linux it builds natively
+    # via apt deps (_check_apt_deps), so nix is genuinely not needed.
+    if platform.system() != "Darwin":
+        return
     print("Checking Nix …", file=sys.stderr)
     if shutil.which("nix-shell"):
         print("  nix-shell OK.", file=sys.stderr)
         return
-    # DeterminateSystems installs to a fixed path not always on PATH yet
+    # DeterminateSystems installs to a fixed path not always on PATH yet.
+    # Don't silently accept this — build_openauto.py runs `nix-shell` and will
+    # fail with a confusing error if PATH isn't updated.
     if Path("/nix/var/nix/profiles/default/bin/nix-shell").exists():
-        print("  nix-shell found at /nix/var/nix/profiles/default/bin/nix-shell.", file=sys.stderr)
-        print("  Add /nix/var/nix/profiles/default/bin to PATH if not already set.", file=sys.stderr)
-        return
-    print(
-        "  WARNING: Nix not found — required to build openauto.\n"
-        "  Install with the DeterminateSystems installer:\n"
-        "    curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install",
-        file=sys.stderr,
+        _die(
+            "nix-shell installed at /nix/var/nix/profiles/default/bin but not on PATH.\n"
+            "         Add it to your shell:\n"
+            "           export PATH=/nix/var/nix/profiles/default/bin:$PATH"
+        )
+    _die(
+        "nix-shell not found — required to build openauto on macOS.\n"
+        "         Install with the DeterminateSystems installer:\n"
+        "           curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install"
     )
 
 
@@ -121,21 +140,24 @@ def _check_cargo() -> None:
     print("Checking Rust toolchain …", file=sys.stderr)
     if shutil.which("cargo"):
         print("  Cargo OK.", file=sys.stderr)
-    else:
-        print("  WARNING: cargo not found — install Rust via https://rustup.rs/", file=sys.stderr)
+        return
+    _die(
+        "cargo not found — install Rust via https://rustup.rs/\n"
+        "         (or `brew install rustup-init && rustup-init` on macOS)"
+    )
 
 
 def _check_cross() -> None:
     print("Checking cross-compilation tools …", file=sys.stderr)
 
     if not shutil.which("rustup"):
-        print("  WARNING: rustup not found — install from https://rustup.rs/", file=sys.stderr)
-        print("           or: brew install rustup-init && rustup-init", file=sys.stderr)
-        return
+        _die(
+            "rustup not found — install from https://rustup.rs/\n"
+            "         (or `brew install rustup-init && rustup-init` on macOS)"
+        )
 
     if not shutil.which("cross"):
-        print("  WARNING: 'cross' not found — install with: cargo install cross", file=sys.stderr)
-        return
+        _die("`cross` not found — install with:  cargo install cross")
 
     # The cross Docker image is amd64-only. On Apple Silicon we need to
     # force-install the x86_64-unknown-linux-gnu host toolchain so cross can
@@ -159,24 +181,20 @@ def _check_cross() -> None:
 
 
 def _check_cargo_audit() -> None:
+    # _check_cargo runs first and dies if cargo is missing, so this is safe.
     print("Checking cargo-audit …", file=sys.stderr)
     if shutil.which("cargo-audit"):
         print("  cargo-audit OK.", file=sys.stderr)
-        return
-    if not shutil.which("cargo"):
-        print("  WARNING: cargo not found — skipping cargo-audit install.", file=sys.stderr)
         return
     print("  cargo-audit not found — installing …", file=sys.stderr)
     _run(["cargo", "install", "cargo-audit"])
 
 
 def _check_cargo_sweep() -> None:
+    # Same precondition as _check_cargo_audit.
     print("Checking cargo-sweep …", file=sys.stderr)
     if shutil.which("cargo-sweep"):
         print("  cargo-sweep OK.", file=sys.stderr)
-        return
-    if not shutil.which("cargo"):
-        print("  WARNING: cargo not found — skipping cargo-sweep install.", file=sys.stderr)
         return
     print("  cargo-sweep not found — installing …", file=sys.stderr)
     _run(["cargo", "install", "cargo-sweep"])
@@ -185,22 +203,24 @@ def _check_cargo_sweep() -> None:
 def _check_ansible() -> None:
     """Check ansible-playbook and ansible-lint — used by board/ provisioning.
 
-    Both are required by `scripts/review.py` and CI; install instructions
-    differ by platform so we just warn rather than auto-install.
+    Both are required: `scripts/deploy.py` runs the playbook, and the
+    `ansible (board)` check in `scripts/review.py` (which the pre-push
+    hook calls) runs `ansible-lint`. Install instructions differ by
+    platform so we don't auto-install; we just fail loud with the right
+    one-liner.
     """
     print("Checking Ansible …", file=sys.stderr)
     missing = [t for t in ("ansible-playbook", "ansible-lint") if not shutil.which(t)]
     if not missing:
         print("  ansible-playbook + ansible-lint OK.", file=sys.stderr)
         return
-    print(f"  WARNING: missing {' '.join(missing)} — install with:", file=sys.stderr)
     if platform.system() == "Darwin":
-        print("    brew install ansible ansible-lint", file=sys.stderr)
+        hint = "brew install ansible ansible-lint"
     elif platform.system() == "Linux":
-        print("    sudo apt-get install -y ansible-core && pipx install ansible-lint",
-              file=sys.stderr)
+        hint = "sudo apt-get install -y ansible-core && pipx install ansible-lint"
     else:
-        print("    pipx install ansible-core ansible-lint", file=sys.stderr)
+        hint = "pipx install ansible-core ansible-lint"
+    _die(f"missing {' '.join(missing)} — install with:\n         {hint}")
 
 
 def _check_env_local() -> None:
@@ -211,8 +231,12 @@ def _check_env_local() -> None:
         print("  .env.local OK.", file=sys.stderr)
         return
     if not template.exists():
-        print("  WARNING: .env.local.example missing — skipping.", file=sys.stderr)
-        return
+        # The template is checked into git; if it's missing, the checkout is
+        # broken — re-cloning is the only sane fix.
+        _die(
+            ".env.local.example missing from the repo root — checkout looks corrupt.\n"
+            "         Re-clone or `git checkout .env.local.example`."
+        )
     shutil.copy(template, target)
     print(f"  Created .env.local from {template.name}.", file=sys.stderr)
     print("  Edit .env.local to fill in your local values (BOARD_HOST, BOARD_MAC, …).",
