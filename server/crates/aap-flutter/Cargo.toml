@@ -16,7 +16,7 @@ parking_lot = "0.12"
 # Runtime dlopen of libflutter_engine.so so the 96 MB mmap + C++ static
 # initialisers happen *after* the USB gadget is on the bus, not during the
 # binary's pre-main() phase. See src/lib_loader.rs.
-libloading  = "0.8"
+libloading  = "0.9"
 
 # Extract the downloaded linux-arm64 engine zip from build.rs without
 # depending on a system `unzip` binary (the cross container doesn't ship one).
