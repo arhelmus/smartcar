@@ -15,13 +15,13 @@
 - name: Detect USB car-mode trigger (jumper / car-mode-once)
   ansible.builtin.stat:
     path: /run/usb-car-mode
-  register: smartcar_usb_car_mode_marker
+  register: smartcar_server_usb_car_mode_marker
   when: smartcar_transport == "bt"
 
 - name: Refuse to deploy bt unit while the USB car-mode jumper is engaged
   ansible.builtin.assert:
     that:
-      - not smartcar_usb_car_mode_marker.stat.exists
+      - not smartcar_server_usb_car_mode_marker.stat.exists
     fail_msg: >-
       smartcar_transport=bt but /run/usb-car-mode exists on the board —
       the jumper (PI16 to GND) is engaged, or /var/lib/smartcar/car-mode-once
