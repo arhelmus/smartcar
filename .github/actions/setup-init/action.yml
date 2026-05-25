@@ -1,0 +1,25 @@
+name: Setup smartcar init prereqs
+description: |
+  Installs the tools `scripts/init.py` hard-requires so `make init` succeeds
+  in CI. The checks went from warn-and-continue to fatal in scripts/init.py
+  (see commit history); CI now needs cross + ansible (always) and nix on
+  macOS runners. Local dev installs these via brew/cargo/rustup as part of
+  normal setup.
+
+runs:
+  using: composite
+  steps:
+    - name: Install Nix (macOS only — Linux openauto builds natively via apt)
+      if: runner.os == 'macOS'
+      uses: DeterminateSystems/nix-installer-action@v16
+
+    # taiki-e/install-action downloads prebuilt cross binaries — far faster
+    # than `cargo install cross` which compiles from source every run.
+    - name: Install cross
+      uses: taiki-e/install-action@v2
+      with:
+        tool: cross
+
+    - name: Install ansible-core + ansible-lint
+      shell: bash
+      run: pip install --quiet ansible-core ansible-lint

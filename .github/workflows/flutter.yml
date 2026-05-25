@@ -24,6 +24,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: subosito/flutter-action@v2
         with: { flutter-version: '3.41.9', channel: stable, cache: true }
+      - uses: ./.github/actions/setup-init
       - run: make init
       - run: flutter pub get --enforce-lockfile
         working-directory: ${{ matrix.project }}
@@ -43,6 +44,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - uses: subosito/flutter-action@v2
         with: { flutter-version: '3.41.9', channel: stable, cache: true }
+      - uses: ./.github/actions/setup-init
       - run: make init
       - run: flutter pub get --enforce-lockfile
         working-directory: mobile
@@ -55,6 +57,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: subosito/flutter-action@v2
         with: { flutter-version: '3.41.9', channel: stable, cache: true }
+      - uses: ./.github/actions/setup-init
       - run: make init
       - run: flutter pub get --enforce-lockfile
         working-directory: mobile
@@ -68,6 +71,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: subosito/flutter-action@v2
         with: { flutter-version: '3.41.9', channel: stable, cache: true }
+      - uses: ./.github/actions/setup-init
       - run: make init
       - run: flutter pub get --enforce-lockfile
         working-directory: server/flutter-ui
