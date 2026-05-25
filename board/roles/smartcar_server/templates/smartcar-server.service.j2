@@ -1,8 +1,20 @@
+{# Transport-aware smartcar-server unit. Forks Unit ordering + Conditions
+   on smartcar_transport. #}
 [Unit]
+{% if smartcar_transport == "bt" %}
+Description=smartcar Android Auto projection (AAW — BR/EDR + WiFi STA)
+After=bluetooth.service systemd-networkd.service
+Wants=bluetooth.service systemd-networkd.service
+{% elif smartcar_transport == "usb" %}
 Description=smartcar Android Auto projection (car mode — USB AOAP)
 After=usb-mode.service
 Requires=usb-mode.service
 ConditionPathExists=/run/usb-car-mode
+{% else %}
+Description=smartcar Android Auto projection (dev — TCP to openauto)
+After=network-online.target
+Wants=network-online.target
+{% endif %}
 StartLimitIntervalSec=60
 StartLimitBurst=5
 
@@ -14,7 +26,7 @@ Environment=RUST_LOG={{ smartcar_rust_log }}
 # persists. The leading '-' on EnvironmentFile makes it optional, so the
 # unit starts normally when no override is set.
 EnvironmentFile=-/run/smartcar-deploy/runtime.env
-ExecStart={{ smartcar_binary }} --transport usb{% if smartcar_extra_args %} {{ smartcar_extra_args }}{% endif %} $DEPLOY_EXTRA_ARGS
+ExecStart={{ smartcar_binary }} --transport {{ smartcar_transport }} --bridge {{ smartcar_bridge }}{% if smartcar_extra_args %} {{ smartcar_extra_args }}{% endif %} $DEPLOY_EXTRA_ARGS
 Restart=on-failure
 RestartSec=5
 

@@ -1,0 +1,11 @@
+# Empty wpa_supplicant stub for /etc/wpa_supplicant/wpa_supplicant-wlan0.conf.
+#
+# The real config (with the HU's PSK) is written to /run/aaw-wpa.conf by
+# smartcar-server's bt module at AAW-bootstrap time — see
+# aap-transport/src/bt/wpa.rs. This file only exists so a stray
+# `systemctl start wpa_supplicant@wlan0.service` doesn't fail-to-start
+# during dev when nothing's talking to wlan0.
+
+ctrl_interface=DIR=/run/wpa_supplicant GROUP=netdev
+update_config=1
+ap_scan=1

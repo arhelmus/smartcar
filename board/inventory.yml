@@ -1,6 +1,6 @@
 # ansible_host / ansible_user come from .env.local (BOARD_HOST / BOARD_USER)
-# via lookup('env') — see board/group_vars/all.yml. The wrapper
-# scripts/board_provision.py loads .env.local before invoking ansible.
+# via lookup('env') — see board/group_vars/all.yml. `make deploy` (which
+# calls scripts/deploy.py) loads .env.local before invoking ansible.
 all:
   children:
     boards:

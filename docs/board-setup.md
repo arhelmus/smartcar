@@ -9,12 +9,12 @@
 
 ## USB modes
 
-The board has a single UDC (USB Device Controller). It can run in one of two modes, selected at boot by a hardware jumper on the 40-pin header:
+The board has a single UDC (USB Device Controller). It can run in one of two modes, selected at boot by a hardware jumper on the 40-pin header. The jumper only affects the **USB gadget** (g_ether vs AOAP); whether `smartcar-server` runs and which transport it picks is set by `smartcar_transport` in `board/group_vars/all.yml`.
 
-| Header pins | PI16 reads | Mode |
-|---|---|---|
-| **No jumper** (default) | HIGH (internal pull-up) | **Dev mode** — USB Ethernet (`g_ether`), SSH at `10.55.0.1` |
-| **Jumper: pin 37 → pin 39** | LOW | **Car mode** — AOAP gadget, `smartcar-server --transport usb` auto-starts |
+| Header pins | PI16 reads | USB gadget | What auto-starts with `smartcar_transport: bt` (default) | …with `smartcar_transport: usb` |
+|---|---|---|---|---|
+| **No jumper** (default) | HIGH (internal pull-up) | `g_ether` → SSH at `10.55.0.1` | `smartcar-server --transport bt` (BR/EDR + WiFi to the car) | Unit gated off — needs the jumper or `car-mode-once` |
+| **Jumper: pin 37 → pin 39** | LOW | AOAP gadget — UDC empty until claimed | `smartcar-server --transport bt` still runs, but **SSH is lost** (no `g_ether`) — only useful if you have serial | `smartcar-server --transport usb` claims the UDC |
 
 The strap pin is **`PI16`** — physical **pin 37** on the 40-pin header. It is
 `gpiochip1` (`300b000.pinctrl`) **line 272** = SoC bank I, pin 16; pin 39 next
@@ -226,43 +226,168 @@ section, not `[Service]`. systemd silently ignores them otherwise and
 restart-burst protection is off. (We've made this mistake; the fix is in
 the deployed unit file.)
 
-## Bluetooth — phone connectivity (planned)
+## Bluetooth — AAW car transport
 
-The board's onboard combo module provides **dual-mode Bluetooth 5.0** (BR/EDR + LE on a single antenna, shared with WiFi). The iPhone holds **three concurrent profiles** to the board, scheduled by the controller — there is no mode to switch:
+Modern Audi MMI (2021+) and BMW iDrive (7+) head units **do not accept wired
+Android Auto** — the only way in is **AAW** (Android Auto Wireless). On AAW
+the phone (us, impersonated by the board) and the car negotiate WiFi
+credentials over a Bluetooth RFCOMM channel, then the phone joins the car's
+hotspot and TCP-connects to the car on port 5288. Once the TCP socket is
+open, the protocol above the transport is byte-identical to the openauto/USB
+path — `aap-core` and the rest of the stack do not change.
 
-| Profile | Direction | Owner on board | Owner on iOS |
-|---|---|---|---|
-| GATT (custom service, LE) | bidirectional, low rate | `smartcar-server` via `aap-control` (`bluer`) | app code (CoreBluetooth) |
-| A2DP sink (BR/EDR) | phone → board, audio | BlueZ + PipeWire / WirePlumber | iOS system audio routing |
-| PAN-U / BNEP (BR/EDR) | bidirectional, network | BlueZ + `bt-network` + `systemd-networkd` | iOS Personal Hotspot |
+This is what `--transport bt` does. Crate layout: `aap-transport/src/bt/`
+(see the file-level rustdoc there for the wire details).
 
-All three run simultaneously over one radio; the controller time-slices ACL packets across them.
+### What plays which role
 
-### iOS constraint
+| Role | Owner |
+|---|---|
+| BR/EDR RFCOMM **client** | Board (us). UUID `4de17a00-52cb-11e6-bdf4-0800200c9a66`, channel 8. |
+| RFCOMM **server** | Car head unit. We connect outward; it accepts. |
+| WiFi AP | Car head unit. SSID + WPA2 PSK delivered to us in `WifiInfoResponse`. |
+| WiFi STA | Board. Joins the HU's AP via `wpa_supplicant` on `wlan0`. |
+| AA TCP server (port 5288) | Car head unit. Address arrives in `WifiStartRequest`. |
+| AA TCP client | Board. Outbound `connect()` from `wlan0`. |
+| AA TLS server | Board (us) — unchanged from USB/TCP paths. |
 
-CoreBluetooth is **BLE-only**. Third-party iOS apps cannot trigger BR/EDR pairing, set audio routing, or toggle Personal Hotspot — those are user actions in Settings and Control Center. The iOS app code therefore talks **exclusively to the BLE GATT channel**; A2DP and PAN are entirely OS-driven once paired. The GATT channel doubles as the signalling plane: the board notifies the app when A2DP or PAN come up so the UI can show status.
+The iOS-app BLE GATT bridge (`aap-bridge`, `--bridge ble`) is **disabled on
+the board for the AAW build**: the combo radio is shared and the AAW
+RFCOMM/WiFi work cannot tolerate `bluer` simultaneously holding the adapter
+for a custom GATT advertisement. Board scripts default to `--bridge none`.
 
 ### Bring-up sequence
 
-1. **First-time pairing (user, once)** — Settings → Bluetooth on the iPhone, tap the board. BlueZ accepts BR/EDR pairing. The board's GATT advertisement is also discoverable; iOS LE-bonds automatically when the app first connects.
-2. **App connect** — CoreBluetooth scans for the service UUID, opens GATT, subscribes to the Event characteristic.
-3. **Audio** — user picks the board as audio output in Control Center. iOS opens an A2DP stream; PipeWire's `bluez_input.*` source feeds PCM into the ALSA default sink. Board emits `ControlEvent::AudioState{up}` over GATT.
-4. **Internet** — user enables Personal Hotspot. A board-side unit calls `bt-network -c <iphone-mac> nap`; `bnep0` comes up and `systemd-networkd` runs DHCP on it. Board emits `ControlEvent::NetState{up, ip}` over GATT.
+1. **First-time pairing (user, once per car)** — Pairing is **car-initiated**.
+   `smartcar-server --transport bt` on the board makes the adapter
+   discoverable with `Class=0x6c020c` (phone) and registers a Just Works
+   agent that auto-accepts any incoming pair request. On the car: open
+   **Android Auto / CarPlay → Add new device** (path varies by HU), the
+   car scans BR/EDR, lists `Smartcar`, the operator selects it, the car
+   sends the pair request, BlueZ accepts via the agent, the bond is
+   cached. No `bluetoothctl pair` on the board, no BD_ADDR to type, no
+   env var to set.
 
-### Files on the board (planned)
+2. **Every subsequent boot (automatic)** — `smartcar-server --transport bt`
+   does:
+   1. Open BlueZ adapter; make discoverable + register the Just Works agent
+      (no-op if the bond already exists; the agent costs nothing).
+   2. Scan paired devices for one whose SDP UUIDs contain the AAWG profile
+      (`4de17a00-…`). On a previously-paired board this resolves in <1 s.
+   3. `Device.Connect()` warm-up (best-effort, non-fatal).
+   4. RFCOMM client `connect()` to the paired peer on channel 8.
+   5. Receive `WifiStartRequest{ip, port}` from HU — save its WiFi-side
+      AA-server address.
+   6. Send `WifiInfoRequest{}` (empty) → receive `WifiInfoResponse{ssid,
+      password, bssid, security, ap_type}`.
+   7. Send `WifiStartResponse{status=SUCCESS}` and `WifiConnectionStatus{
+      status=SUCCESS}` — RFCOMM is now drained.
+   8. Write `/run/aaw-wpa.conf` with the HU's creds; `wpa_supplicant -B -i
+      wlan0 -c /run/aaw-wpa.conf`.
+   9. `systemd-networkd` DHCPs `wlan0` from `wlan0.network`; we poll
+      `ip -4 addr show wlan0` for a global address.
+   10. `TcpStream::connect(<HU_IP>:<HU_PORT>)` → wrap in `TcpTransport` →
+      hand to `Connection` (unchanged from the openauto/USB paths).
 
-| Path | Purpose |
-|---|---|
-| `/etc/systemd/system/bluetooth.service.d/override.conf` | Enable BlueZ flags needed for A2DP sink + PAN |
-| `/etc/pipewire/pipewire.conf.d/50-bluetooth.conf` | A2DP sink role, route to ALSA default |
-| `/etc/systemd/network/bnep0.network` | DHCP on `bnep0` once BlueZ brings it up |
-| `/usr/local/sbin/pan-connect.sh` | Calls `bt-network -c <peer> nap` when a paired iPhone offers NAP |
-| `/etc/systemd/system/pan-connect@.service` | Triggers `pan-connect.sh` on Bluetooth device-connected events |
-| `aap-control` crate in `smartcar-server` | Registers the custom GATT service via `bluer` |
+The whole bootstrap takes ~5–15 s on a paired car within range. Flight-log
+checkpoints (`/var/log.hdd/smartcar-boot.log`) mirror the USB-mode breadcrumbs
+so post-mortem diffing across a failed AAW vs. successful USB boot is easy.
 
-### Coexistence note
+### Files on the board
 
-BR/EDR audio occupies a slice of the 2.4 GHz band, but the GATT control plane is ~100 B/s of protobuf, well below where scheduling jitter would show up. WiFi on the same antenna can lose packets during heavy A2DP traffic — moving WiFi to 5 GHz on the combo module mitigates this. No tuning needed for the GATT path alone.
+Installed by the ansible playbook at `board/` — `bluetooth` role for the
+BlueZ + WiFi userland and `/etc/bluetooth/main.conf`, `network` role for
+the systemd-networkd + wpa_supplicant configs, `smartcar_server` role for
+the unit + defaults file:
+
+| Path | Owning role | Purpose |
+|---|---|---|
+| `/etc/bluetooth/main.conf` | `bluetooth` | BlueZ tuned for AAW: `ControllerMode=dual`, `Class=0x6c020c` (phone), `JustWorksRepairing=always`, `FastConnectable=true`. Stock file backed up to `main.conf.dist` on first run. |
+| `/etc/systemd/network/40-wlan0.network` | `network` | `DHCP=ipv4` on `wlan0`, link-local off, IPv6 RA off — the HU's DHCP server is the single source of truth. |
+| `/etc/wpa_supplicant/wpa_supplicant-wlan0.conf` | `network` | Empty stub so the systemd unit doesn't fail-to-start; the real config (`/run/aaw-wpa.conf`) is written at AAW-handshake time by `smartcar-server`. Deployed with `force: false` so hand-edits survive re-provisioning. |
+| `RUST_LOG` env on the unit | `smartcar_server` | Set via `Environment=` in the deployed `.service` file (driven by `smartcar_rust_log` in `group_vars`). One-shot extra `ExecStart=` args are layered on top via `/run/smartcar-deploy/runtime.env` (transient, tmpfs) — see `scripts/deploy.py --runtime-args`. |
+| `/etc/systemd/system/smartcar-server.service` | `smartcar_server` | Transport-aware. For `bt`: `After=bluetooth.service systemd-networkd.service`, no jumper gate. For `usb`: the historical `Requires=usb-mode.service` + `ConditionPathExists=/run/usb-car-mode`. |
+
+To deploy on a fresh board:
+
+```bash
+cd board
+ansible-playbook site.yml --check --diff       # dry-run first
+ansible-playbook site.yml                      # apply
+```
+
+To switch a board from USB to AAW, set `smartcar_transport: bt` in
+`board/group_vars/all.yml` (or in inventory, per host) and re-run the
+playbook. There is no BD_ADDR to configure — pair via the car's AA setup
+on the first boot and the bond is cached automatically.
+
+### systemd unit (`/etc/systemd/system/smartcar-server.service`)
+
+On a board configured for AAW, the unit's `ExecStart=` and `EnvironmentFile=`
+look like:
+
+```ini
+[Service]
+EnvironmentFile=-/etc/default/smartcar-server
+ExecStart=/usr/local/bin/smartcar-server --transport bt --bridge none
+Restart=on-failure
+```
+
+The previous USB path remains valid for cars that still accept wired AA —
+just swap `--transport bt` for `--transport usb` (and the
+`/run/usb-car-mode` jumper logic continues to apply for that case). See the
+"USB modes" section above.
+
+### Package + rfkill prerequisites
+
+The `bluetooth` role apt-installs (see `bluetooth_packages` in
+`board/group_vars/all.yml`):
+
+- `bluez`, `bluez-tools` — adapter + RFCOMM, `bluetoothctl` for pairing.
+- `wpasupplicant` — STA-mode WiFi association.
+- `iw`, `iproute2`, `rfkill` — link state polling and unblocking.
+
+Critically **not** installed: `hostapd`, `dnsmasq`. The board is a STA, never
+an AP, in the AAW path. (`aa-proxy-rs` and `aawgd` are HU-impersonators and
+do need hostapd; we go the other way.)
+
+### WiFi 5 GHz STA requirement
+
+The combo radio shares its single 2.4 GHz antenna with BR/EDR. While the
+RFCOMM handshake takes seconds and ends before WiFi comes up, modern AAW
+HUs (BMW iDrive 7+, Audi MMI 2021+) bring their AP up on **5 GHz** to keep
+their own BT coexistence sane. The board therefore **must be able to join a
+5 GHz network as STA** — hosting 5 GHz is not required since the HU is the
+AP. Verify the chipset's STA-mode 5 GHz capability after provisioning:
+
+```bash
+ssh root@10.55.0.1 'iw phy 2>&1 | grep -A1 "Band 2:"'
+```
+
+Look for `Frequencies:` under `Band 2:` listing 5180/5240/5500/etc. MHz.
+If only Band 1 appears, the AAW path will not work with these cars on this
+radio and a small USB WiFi adapter is required (the `aa-proxy-rs` README
+maintains a list of cheap dongles that are known good).
+
+### Coexistence note (revisited)
+
+BR/EDR RFCOMM during the handshake (a few seconds, <1 KB/s) and 5 GHz STA
+for the AA video stream live on different bands and do not contend. Older
+boards/chipsets that only do 2.4 GHz WiFi will see latency hits on the AA
+video path while any BR/EDR profile is active (e.g. if you keep the iOS-app
+GATT bridge on by passing `--bridge ble`). The default `--bridge none` on
+this build avoids that.
+
+### Disabled: the old phone↔board BLE bridge
+
+The `aap-bridge` crate's BLE GATT service (custom service UUID
+`7c63a8ee-…`) is **not loaded** by the board build:
+`smartcar_bridge: none` in `board/group_vars/all.yml` makes the deployed
+`/etc/systemd/system/smartcar-server.service` pass `--bridge none`. The
+crate stays in the workspace for the TCP-mode dev path on the Mac (so the
+iOS Simulator can still exercise the control plane) and for any future
+re-introduction, but the bt module specifically does not co-exist with it
+at runtime.
 
 ## Viewing logs in car mode
 

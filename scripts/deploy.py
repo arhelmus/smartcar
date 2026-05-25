@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -54,6 +55,13 @@ RUNTIME_OVERRIDE_FILE = f"{RUNTIME_OVERRIDE_DIR}/runtime.env"
 
 HEALTHCHECK_TIMEOUT_SEC  = 10
 HEALTHCHECK_INTERVAL_SEC = 0.5
+
+# BT-specific healthcheck (only runs when the effective transport is `bt`):
+# poll `bluetoothctl show` on the board until the adapter is advertising
+# itself. The bt module enters this state ~100 ms after main() reaches
+# Connection::run, so a few seconds of slack is plenty.
+BT_HEALTHCHECK_TIMEOUT_SEC  = 8
+BT_HEALTHCHECK_INTERVAL_SEC = 0.5
 
 
 def _ssh(board: str, user: str, cmd: str, *, capture: bool = False) -> subprocess.CompletedProcess:
@@ -180,6 +188,117 @@ def _healthcheck(board: str, user: str) -> int:
     return 1
 
 
+def _effective_transport(board: str, user: str, runtime_args: str) -> str | None:
+    """Return the `--transport <X>` value the running unit is actually using.
+
+    A `--transport` flag in `--runtime-args` wins because the transient
+    EnvironmentFile is appended to ExecStart after the persistent args. If
+    no override, fall back to whatever the deployed unit's ExecStart says.
+    Returns None if we can't tell (no `--transport` anywhere — shouldn't
+    happen with the current template, but the caller skips the BT check
+    gracefully in that case).
+    """
+    m = re.search(r"--transport\s+(\w+)", runtime_args)
+    if m:
+        return m.group(1)
+
+    result = _ssh(
+        board, user,
+        "systemctl show smartcar-server.service -p ExecStart",
+        capture=True,
+    )
+    if result.returncode != 0:
+        return None
+    m = re.search(r"--transport\s+(\w+)", result.stdout)
+    return m.group(1) if m else None
+
+
+def _check_bt_advertisement(board: str, user: str) -> int:
+    """Confirm the board is actually advertising on Bluetooth as designed.
+
+    Queries the board itself via `bluetoothctl show` (BlueZ D-Bus query, no
+    over-the-air scan from the laptop). Required state, per the bt module +
+    /etc/bluetooth/main.conf:
+      - Powered: yes
+      - Pairable: yes
+      - Discoverable: yes
+      - Class non-zero (the bluetooth role sets 0x6c020c — "phone")
+    Also greps the smartcar-server journal for the agent-registered log
+    line, so we know the Just Works agent that accepts car-initiated pair
+    requests is alive.
+    """
+    deadline = time.monotonic() + BT_HEALTHCHECK_TIMEOUT_SEC
+    last_fields: dict[str, str] = {}
+    while time.monotonic() < deadline:
+        result = _ssh(board, user, "bluetoothctl show", capture=True)
+        if result.returncode != 0:
+            print(f"  ✗ bluetoothctl show failed: {result.stderr.strip()}",
+                  file=sys.stderr)
+            return 1
+        # bluetoothctl's first line is `Controller AA:BB:CC:DD:EE:FF (public)`
+        # — a header, not a "key: value" pair. Indented children are the
+        # properties we want (`Powered: yes`, `Class: 0x...`, …). UUIDs are
+        # one-per-line and we don't need them — skip.
+        last_fields = {}
+        for line in result.stdout.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("Controller "):
+                parts = stripped.split()
+                if len(parts) >= 2:
+                    last_fields["Controller"] = parts[1]
+                continue
+            if ":" in stripped and not stripped.startswith("UUID"):
+                k, _, v = stripped.partition(":")
+                last_fields[k.strip()] = v.strip()
+
+        if (
+            last_fields.get("Powered") == "yes"
+            and last_fields.get("Pairable") == "yes"
+            and last_fields.get("Discoverable") == "yes"
+            and last_fields.get("Class", "0x00000000") not in {"0x00000000", "0x0"}
+        ):
+            break
+        time.sleep(BT_HEALTHCHECK_INTERVAL_SEC)
+    else:
+        # Loop exhausted; report whatever the last snapshot was.
+        print(
+            f"\n  ✗ BT advertisement unhealthy after {BT_HEALTHCHECK_TIMEOUT_SEC}s: "
+            f"Powered={last_fields.get('Powered')} "
+            f"Pairable={last_fields.get('Pairable')} "
+            f"Discoverable={last_fields.get('Discoverable')} "
+            f"Class={last_fields.get('Class')}",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Agent presence: grep the recent journal for the bt-module breadcrumb.
+    # If smartcar-server is `active (running)` but the agent line is absent,
+    # it likely crashed inside bluer before reaching that point.
+    agent_check = _ssh(
+        board, user,
+        "journalctl -u smartcar-server.service --since '60 seconds ago' --no-pager "
+        "| grep -F 'Just Works agent registered' >/dev/null",
+        capture=True,
+    )
+    if agent_check.returncode != 0:
+        print(
+            "\n  ✗ smartcar-server is up but the BT agent never registered "
+            "(no `Just Works agent registered` line in the last minute of journal)",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Class includes a decimal annotation ("0x0040020c (4194828)"); strip it.
+    klass = last_fields.get("Class", "?").split()[0]
+    addr  = last_fields.get("Controller", "?")
+    print(
+        f"  ✓ BT advertising as `Smartcar`: addr={addr} Class={klass} "
+        "Pairable=yes Discoverable=yes — agent registered",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Build, deploy, provision, restart, and health-check the board.",
@@ -249,7 +368,20 @@ def main() -> int:
 
     # ── 4/4: healthcheck ────────────────────────────────────────────────────
     print("\n[4/4] healthcheck …", file=sys.stderr)
-    return _healthcheck(board, user)
+    rc = _healthcheck(board, user)
+    if rc != 0:
+        return rc
+
+    # Transport-specific follow-up. For BT we additionally confirm the board
+    # is actively advertising itself (so the car can find it) — querying
+    # bluetoothctl on the board, not scanning over-the-air from the Mac.
+    transport = _effective_transport(board, user, args.runtime_args)
+    if transport == "bt":
+        rc = _check_bt_advertisement(board, user)
+        if rc != 0:
+            return rc
+
+    return 0
 
 
 if __name__ == "__main__":

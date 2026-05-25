@@ -1,0 +1,25 @@
+# Deployed by the `network` role for the AAW (Android Auto Wireless) path.
+#
+# smartcar-server's bt module (aap-transport/src/bt/wpa.rs) writes
+# /run/aaw-wpa.conf with the HU's WiFi credentials at AAW-bootstrap time
+# and spawns `wpa_supplicant -B -i wlan0 -c /run/aaw-wpa.conf`. Once
+# wpa_supplicant brings carrier up, systemd-networkd reads this file and
+# DHCPs the link from the HU's DHCP server.
+#
+# LinkLocalAddressing=no + IPv6AcceptRA=no prevent a 169.254 fallback or
+# a SLAAC IPv6 address from confounding the TCP connect to the HU's
+# advertised IP — the HU's DHCPv4 lease is the single source of truth.
+
+[Match]
+Name=wlan0
+
+[Network]
+DHCP=ipv4
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+
+[DHCP]
+UseDNS=no
+UseNTP=no
+UseRoutes=yes
+RouteMetric=2048

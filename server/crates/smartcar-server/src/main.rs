@@ -4,13 +4,16 @@
 //!
 //! # Transport selection (`--transport`)
 //!
-//! | Flag                | Transport     | When to use                         |
-//! |---------------------|---------------|-------------------------------------|
-//! | `--transport tcp`   | TCP (default) | Local dev: board → laptop openauto  |
-//! | `--transport usb`   | USB FunctionFS| Board plugged into real car head unit|
+//! | Flag                | Transport     | When to use                                                     |
+//! |---------------------|---------------|-----------------------------------------------------------------|
+//! | `--transport tcp`   | TCP (default) | Local dev: board → laptop openauto                              |
+//! | `--transport usb`   | USB FunctionFS| Board plugged into a head unit that accepts **wired** Android Auto |
+//! | `--transport bt`    | AAW bootstrap | Board ↔ a head unit that requires **Android Auto Wireless** (Audi MMI 2021+, BMW iDrive 7+) |
 //!
-//! The USB transport is Linux-only.  It runs the AOAP two-persona handshake
-//! before starting the AA protocol.
+//! USB and BT are Linux-only. USB runs the AOAP two-persona handshake before
+//! the AA protocol; BT runs the AAW (BR/EDR + RFCOMM + WifiInfo*) handshake,
+//! then joins the head unit's hotspot and TCP-connects out to it on the
+//! address the HU advertised in `WifiStartRequest`.
 //!
 //! # Frame producer selection
 //!
@@ -38,6 +41,8 @@ use aap_testkit::{
     LoopingWavStream, TestVideoProducer, ASSET_KICK_IN, ASSET_SNARE_UNDER, ASSET_SYNTH_01,
 };
 use aap_transport::TcpTransport;
+#[cfg(target_os = "linux")]
+use aap_transport::{BtConfig, BtTransport};
 use aap_video::{
     advertise, video_frame_channel, video_start_gate, VideoCfg, VideoFrameReceiver,
     VideoFrameSender, VideoService, VideoStartRx, VideoStartTx, SOFTWARE_CAPS,
@@ -48,11 +53,21 @@ use aap_video::{
 enum TransportChoice {
     /// TCP socket — for local development against the openauto emulator.
     Tcp,
-    /// USB FunctionFS gadget — for connecting to a real (or laptop) head unit.
+    /// USB FunctionFS gadget — for connecting to a real (or laptop) head unit
+    /// that accepts wired Android Auto.
     ///
     /// Runs the AOAP two-persona handshake automatically.
     /// Linux only; requires root / CAP_SYS_ADMIN.
     Usb,
+    /// Bluetooth (AAW) — for head units that require Android Auto Wireless
+    /// (Audi MMI 2021+, BMW iDrive 7+). Drives the RFCOMM + WifiInfo*
+    /// handshake, joins the HU's hotspot, and TCP-connects outward.
+    ///
+    /// Pairing is **car-initiated** — open the car's AA Wireless setup,
+    /// select `Smartcar`, accept Just Works. The bond is then cached and
+    /// reused automatically. No CLI flag, no env var, no `bluetoothctl`.
+    /// See `docs/board-setup.md`. Linux only.
+    Bt,
 }
 
 /// Which transport carries the iOS-app bridge control plane.
@@ -334,6 +349,45 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::bail!(
                     "--transport usb is only supported on Linux \
                      (FunctionFS gadget requires the Linux USB gadget stack)"
+                );
+            }
+        }
+        TransportChoice::Bt => {
+            #[cfg(target_os = "linux")]
+            {
+                tracing::info!(
+                    "BT: starting AAW bootstrap (pair from the car if first run)"
+                );
+                flight_log("main: BtTransport::connect (auto-discover paired AAW peer)");
+                let transport = BtTransport::connect(BtConfig::default()).await?;
+                flight_log("main: BtTransport::connect returned (joined HU WiFi)");
+                finish_connection(
+                    transport,
+                    &args,
+                    frame_tx,
+                    frame_rx,
+                    video_start_tx,
+                    video_start_rx,
+                    media_mixer,
+                    speech_mixer,
+                    system_mixer,
+                    advertised,
+                )
+                .await?;
+                flight_log("main: Connection::run() returned");
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = frame_tx;
+                let _ = frame_rx;
+                let _ = video_start_tx;
+                let _ = video_start_rx;
+                let _ = media_mixer;
+                let _ = speech_mixer;
+                let _ = system_mixer;
+                let _ = advertised;
+                anyhow::bail!(
+                    "--transport bt is only supported on Linux (BlueZ-only)"
                 );
             }
         }

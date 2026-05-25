@@ -1,3 +1,11 @@
+- name: Validate smartcar_transport
+  ansible.builtin.assert:
+    that:
+      - smartcar_transport in ["usb", "bt", "tcp"]
+    fail_msg: >-
+      smartcar_transport must be one of: usb, bt, tcp
+      (got '{{ smartcar_transport }}'). See group_vars/all.yml.
+
 - name: Deploy smartcar-server.service unit
   ansible.builtin.template:
     src: smartcar-server.service.j2
@@ -10,8 +18,9 @@
 - name: Flush handlers before enable
   ansible.builtin.meta: flush_handlers
 
-# Enabled, not started. ConditionPathExists=/run/usb-car-mode gates it
-# to boots where usb-mode.service decided car mode.
+# Enabled, not started. For USB transport, ConditionPathExists=/run/usb-car-mode
+# gates car-mode boots; for BT, the unit comes up unconditionally on
+# multi-user.target.
 - name: Enable smartcar-server.service
   ansible.builtin.systemd:
     name: smartcar-server.service

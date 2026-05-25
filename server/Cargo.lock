@@ -117,12 +117,17 @@ version = "0.1.0"
 dependencies = [
  "aap-contracts",
  "async-trait",
+ "bluer",
  "bytes",
+ "futures",
  "libc",
  "openssl",
+ "prost",
+ "prost-build",
  "thiserror",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

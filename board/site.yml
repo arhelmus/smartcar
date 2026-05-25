@@ -15,9 +15,10 @@
           - board_mac_dev | length > 0
         fail_msg: >-
           BOARD_HOST / BOARD_USER / BOARD_MAC / BOARD_MAC_DEV must come
-          from .env.local. Run `python3 scripts/board_provision.py` (it
-          loads .env.local before invoking ansible). For direct
-          `ansible-playbook` use, first `set -a; . ../.env.local; set +a`.
+          from .env.local. Run `make deploy` (which calls
+          scripts/deploy.py and loads .env.local before invoking ansible).
+          For direct `ansible-playbook` use, first
+          `set -a; . ../.env.local; set +a`.
 
     # The `apt` module needs python3-apt on the target. Apply normally
     # auto-installs it, but `--check` cannot. Use `raw` so we don't need
@@ -29,6 +30,7 @@
         || (apt-get update -qq && apt-get install -y python3-apt)
       register: python3_apt_bootstrap
       changed_when: "'install ok installed' not in python3_apt_bootstrap.stdout"
+
   roles:
     - base
     - network

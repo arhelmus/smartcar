@@ -1,11 +1,73 @@
-# Bluetooth bring-up is planned but not yet on the board. See
-# docs/board-setup.md §Bluetooth for the design (A2DP sink + PAN/BNEP +
-# custom GATT control plane). Files this role will eventually own:
-#   /etc/systemd/system/bluetooth.service.d/override.conf
-#   /etc/pipewire/pipewire.conf.d/50-bluetooth.conf
-#   /etc/systemd/network/bnep0.network
-#   /usr/local/sbin/pan-connect.sh
-#   /etc/systemd/system/pan-connect@.service
-- name: Bluetooth role placeholder (no-op until the planned work lands)
-  ansible.builtin.debug:
-    msg: "bluetooth role is a stub — see board/README.md and docs/board-setup.md"
+# Bluetooth provisioning for the AAW (Android Auto Wireless) car path.
+#
+# The board acts as the **phone**: BR/EDR RFCOMM client to the car HU's
+# AAWG profile (UUID 4de17a00-…, channel 8), then joins the HU's hotspot
+# as a STA. See docs/board-setup.md §"Bluetooth — AAW car transport".
+#
+# The custom phone↔board BLE GATT service in `aap-bridge` is OFF on the
+# board (group_vars: smartcar_bridge=none) — it would compete with AAW for
+# the combo radio. This role intentionally does NOT register that GATT
+# service.
+
+# update_cache:false — the play-level pre_task already tried to refresh.
+# Offline runs against an already-provisioned board are a no-op here.
+- name: Install Bluetooth + WiFi userland packages
+  ansible.builtin.apt:
+    name: "{{ bluetooth_packages }}"
+    state: present
+    update_cache: false
+
+# BlueZ's stock main.conf has Class=0 and ControllerMode=auto. We need
+# Class=0x6c020c (phone) so cars present us as an Android Auto-capable peer,
+# ControllerMode=dual to keep BR/EDR + LE available, and JustWorksRepairing
+# so the car can re-pair without UI. Stock file backed up on first run.
+- name: Stat /etc/bluetooth/main.conf
+  ansible.builtin.stat:
+    path: /etc/bluetooth/main.conf
+  register: bluez_main_conf
+
+- name: Stat /etc/bluetooth/main.conf.dist (one-shot backup)
+  ansible.builtin.stat:
+    path: /etc/bluetooth/main.conf.dist
+  register: bluez_main_conf_dist
+
+- name: Back up stock /etc/bluetooth/main.conf to .dist (first run only)
+  ansible.builtin.copy:
+    src: /etc/bluetooth/main.conf
+    dest: /etc/bluetooth/main.conf.dist
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0644"
+  when:
+    - bluez_main_conf.stat.exists
+    - not bluez_main_conf_dist.stat.exists
+
+- name: Deploy smartcar-tuned /etc/bluetooth/main.conf
+  ansible.builtin.template:
+    src: main.conf.j2
+    dest: /etc/bluetooth/main.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart bluetooth
+
+# rfkill state generally survives reboot on Debian, but we unblock here so
+# a fresh image (or a kernel that came up blocked) doesn't silently kill the
+# AAW path. `command` not `shell`; idempotent — rfkill returns 0 either way.
+- name: rfkill unblock bluetooth
+  ansible.builtin.command: rfkill unblock bluetooth
+  changed_when: false
+
+- name: rfkill unblock wifi
+  ansible.builtin.command: rfkill unblock wifi
+  changed_when: false
+
+- name: Flush handlers before enable
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable + start bluetooth.service
+  ansible.builtin.systemd:
+    name: bluetooth.service
+    enabled: true
+    state: started

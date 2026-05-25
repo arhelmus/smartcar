@@ -1,13 +1,17 @@
 # Board provisioning variables. Addressing (board IP / user / host-side MAC)
-# is sourced from .env.local via lookup('env'); the wrapper
-# scripts/board_provision.py loads it, mirroring the python run scripts.
-# Run `ansible-playbook` directly only after `set -a; . ../.env.local; set +a`.
+# is sourced from .env.local via lookup('env'); `make deploy` (which calls
+# scripts/deploy.py) loads it, mirroring the python run scripts. Run
+# `ansible-playbook` directly only after `set -a; . ../.env.local; set +a`.
 
 # --- Pulled from .env.local ------------------------------------------------
 board_host: "{{ lookup('env', 'BOARD_HOST') }}"
 board_user: "{{ lookup('env', 'BOARD_USER') }}"
 board_mac_host: "{{ lookup('env', 'BOARD_MAC') }}"
 board_mac_dev: "{{ lookup('env', 'BOARD_MAC_DEV') }}"
+laptop_host: "{{ lookup('env', 'LAPTOP_HOST') }}"
+# BOARD_CAR_BT_ADDR is intentionally NOT pulled here — AAW pairing is
+# car-initiated and the bonded peer is auto-discovered from BlueZ's paired
+# device list (filtered by AAWG SDP UUID).
 
 # --- USB-Ethernet link to laptop -------------------------------------------
 usb_eth_board_cidr: "{{ board_host }}/24"
@@ -33,14 +37,43 @@ journal_sync_interval: 1s
 smartcar_state_dir: /var/lib/smartcar
 smartcar_binary: /usr/local/bin/smartcar-server
 smartcar_rust_log: "info,aap_core=debug,aap_audio=debug,aap_transport=debug"
-# Args to smartcar-server in car mode. The deployed unit currently passes
-# only `--transport usb`; CLAUDE.md mentions `--bridge ble` as the eventual
-# car-mode invocation once the BLE bridge lands. Toggle via inventory.
+
+# Which AA transport this board runs.
+#   bt  — Android Auto Wireless (BR/EDR + RFCOMM + WiFi). Default — most
+#         modern HUs (Audi MMI 2021+, BMW iDrive 7+) only accept wireless.
+#         Pairing is car-initiated; the bonded peer is auto-discovered
+#         from BlueZ's paired-device list (filtered by AAWG SDP UUID).
+#         No BD_ADDR to set, here or anywhere else. Unit starts on
+#         multi-user.target, no jumper gate — leave the jumper OFF or you
+#         lose USB-Ethernet SSH (g_ether-load is jumper-conditional).
+#   usb — AOAP over the FunctionFS gadget; for HUs that still accept
+#         wired AA. Gated by /run/usb-car-mode (jumper or one-shot
+#         override) — only fires when the operator opts in.
+#   tcp — Dev only; talks to openauto on the laptop. Not for the board.
+smartcar_transport: bt
+
+# iOS-app bridge. The custom GATT service in aap-bridge is OFF on the board
+# (`none`) — it competes with AAW for the combo radio. Use `tcp` only for
+# the Mac/Simulator dev path; `ble` is the historical pre-AAW board value.
+smartcar_bridge: none
+
+# Free-form trailing args appended after --transport/--bridge.
 smartcar_extra_args: ""
 
 # --- Packages -------------------------------------------------------------
 base_packages:
   - gpiod          # gpioget(1), used by usb-mode-select.sh
   - fake-hwclock   # no-RTC time persistence (split-unit form)
-  - rsync          # target for scripts/deploy_board.py
+  - rsync          # target for scripts/deploy.py
   - openssh-server # never lose remote access
+
+# Bluetooth + WiFi userland for the AAW path. Pulled in by the `bluetooth`
+# and `network` roles regardless of smartcar_transport — the cost is small
+# (~6 MB) and it keeps `--transport bt` reachable without re-provisioning.
+bluetooth_packages:
+  - bluez
+  - bluez-tools
+  - wpasupplicant
+  - iw
+  - rfkill
+  - iproute2

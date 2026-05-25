@@ -1,6 +1,8 @@
+# update_cache:false — the play-level pre_task already refreshed (or tried
+# to). When the board is offline-with-packages-present, this is a no-op
+# against the stale local cache.
 - name: Install base packages
   ansible.builtin.apt:
     name: "{{ base_packages }}"
     state: present
-    update_cache: true
-    cache_valid_time: 3600
+    update_cache: false

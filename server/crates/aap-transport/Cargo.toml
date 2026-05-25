@@ -13,12 +13,23 @@ thiserror     = { workspace = true }
 tokio         = { workspace = true }
 tracing       = { workspace = true }
 openssl       = { workspace = true }
+prost         = { workspace = true }
 # Needed for poll(2) on the USB-gadget ep0 file — heartbeat logging while
 # waiting for FUNCTIONFS_ENABLE from a not-yet-enumerated host.
 libc          = "0.2"
+
+# Bluetooth (AAW car path) is Linux-only — `bluer` wraps BlueZ over D-Bus.
+# Same gate the `usb` module already uses; macOS dev builds compile a stub.
+[target.'cfg(target_os = "linux")'.dependencies]
+bluer   = { workspace = true }
+futures = { workspace = true }
+uuid    = { workspace = true }
 
 [features]
 # Statically build & link OpenSSL instead of using the system library.
 # Enabled for cross/board builds where the target's libssl ABI differs
 # from the cross toolchain's (e.g. Debian 13 ships libssl.so.3 only).
 openssl-vendored = ["openssl/vendored"]
+
+[build-dependencies]
+prost-build = { workspace = true }

@@ -42,11 +42,11 @@ anyhow             = "1"
 tokio              = { version = "1", features = ["full"] }
 tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-clap               = { version = "4", features = ["derive"] }
+clap               = { version = "4", features = ["derive", "env"] }
 prost              = "0.14"
 prost-build        = "0.14"
 openssl            = "0.10"
-bluer              = { version = "0.17", default-features = false, features = ["bluetoothd"] }
+bluer              = { version = "0.17", default-features = false, features = ["bluetoothd", "rfcomm"] }
 uuid               = { version = "1" }
 futures            = "0.3"
 

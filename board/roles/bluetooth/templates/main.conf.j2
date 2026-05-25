@@ -1,0 +1,25 @@
+# smartcar-tuned BlueZ adapter config — deployed by the `bluetooth`
+# ansible role. The stock file is preserved at /etc/bluetooth/main.conf.dist
+# on first provisioning run.
+#
+# Three things matter:
+#  1. ControllerMode=dual — BR/EDR for RFCOMM + LE for future control-plane.
+#  2. JustWorksRepairing=always — re-pair without UI when the car forgets us.
+#  3. Class=0x6c020c — major class "phone" / minor "smart phone", so the car
+#     offers Android Auto-targeted services on first pairing.
+
+[General]
+ControllerMode = dual
+JustWorksRepairing = always
+FastConnectable = true
+Privacy = device
+Class = 0x6c020c
+DiscoverableTimeout = 0
+PairableTimeout = 0
+
+[Policy]
+AutoEnable = true
+
+[GATT]
+# We don't run a GATT server on the AAW path (smartcar_bridge=none); the
+# defaults are fine.

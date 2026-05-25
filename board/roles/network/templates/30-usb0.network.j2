@@ -1,5 +1,5 @@
 # Direct USB-C link between Orange Pi Zero 2W (usb0) and the Mac.
-# Pi is {{ usb_eth_board_cidr.split('/')[0] }}; set the Mac's USB-ethernet interface to 10.55.0.2/24.
+# Pi is {{ usb_eth_board_cidr.split('/')[0] }}; set the Mac's USB-ethernet interface to {{ laptop_host }}/24.
 [Match]
 Name=usb0
 
