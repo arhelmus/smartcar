@@ -30,6 +30,7 @@ import concurrent.futures
 import dataclasses
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -44,6 +45,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SERVER = REPO_ROOT / "server"
 MOBILE = REPO_ROOT / "mobile"
 EMBED = SERVER / "flutter-ui"
+BOARD = REPO_ROOT / "board"
 
 
 @dataclasses.dataclass
@@ -144,6 +146,21 @@ def build_checks(*, skip_cross: bool) -> list[Check]:
     ]
     for label, path in (("flutter (mobile)", MOBILE), ("flutter (flutter-ui)", EMBED)):
         checks.append(Check(label, sequence(flutter_steps, path)))
+
+    # Ansible — syntax-check is cheap, lint catches FQCN/var/name drift.
+    # Auto-skips when ansible-playbook is missing (same shape as cross-check on
+    # Linux); install via brew/apt — see init.py _check_ansible.
+    if shutil.which("ansible-playbook"):
+        ansible_cmds = ["ansible-playbook site.yml --syntax-check"]
+        if shutil.which("ansible-lint"):
+            ansible_cmds.append("ansible-lint")
+        checks.append(
+            Check(
+                "ansible (board)",
+                sequence(ansible_cmds, BOARD),
+                hint="brew install ansible ansible-lint  (or re-run `make init`)",
+            )
+        )
 
     return checks
 

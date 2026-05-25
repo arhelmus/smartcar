@@ -47,7 +47,7 @@
     owner: root
     group: root
     mode: "0644"
-  notify: daemon-reload
+  notify: Daemon-reload systemd
 
 - name: Deploy g_ether-load.service unit
   ansible.builtin.copy:
@@ -56,7 +56,7 @@
     owner: root
     group: root
     mode: "0644"
-  notify: daemon-reload
+  notify: Daemon-reload systemd
 
 - name: Flush handlers before enable
   ansible.builtin.meta: flush_handlers

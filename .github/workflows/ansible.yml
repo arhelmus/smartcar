@@ -1,0 +1,34 @@
+name: ansible
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'board/**'
+      - '.github/workflows/ansible.yml'
+  pull_request:
+    paths:
+      - 'board/**'
+      - '.github/workflows/ansible.yml'
+
+# Validates the board/ provisioning playbook without touching real
+# hardware. Syntax-check catches structural / FQCN / undefined-var
+# errors; ansible-lint catches style + a curated set of correctness
+# rules. Full apply is intentionally not in CI — the H618 UDC, PI16
+# GPIO strap, and AOAP gadget are pure hardware behaviour that no
+# container can simulate.
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Install ansible-core + ansible-lint
+        run: pip install --quiet ansible-core ansible-lint
+      - name: Syntax check
+        run: ansible-playbook site.yml --syntax-check
+        working-directory: board
+      - name: Lint
+        run: ansible-lint
+        working-directory: board

@@ -28,4 +28,4 @@
     owner: root
     group: root
     mode: "0644"
-  notify: restart journald
+  notify: Restart journald

@@ -1,5 +1,5 @@
 # networkctl reload re-reads .network files without bouncing the daemon,
 # so the usb0 link (and our SSH session) stays up.
-- name: reload networkd
+- name: Reload networkd
   ansible.builtin.command: networkctl reload
   changed_when: true

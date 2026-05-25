@@ -11,7 +11,7 @@ re-run `make init`.
 """
 
 # Bump whenever init.py changes meaningfully.
-INIT_VERSION = 4
+INIT_VERSION = 5
 
 import platform
 import shutil
@@ -182,6 +182,27 @@ def _check_cargo_sweep() -> None:
     _run(["cargo", "install", "cargo-sweep"])
 
 
+def _check_ansible() -> None:
+    """Check ansible-playbook and ansible-lint — used by board/ provisioning.
+
+    Both are required by `scripts/review.py` and CI; install instructions
+    differ by platform so we just warn rather than auto-install.
+    """
+    print("Checking Ansible …", file=sys.stderr)
+    missing = [t for t in ("ansible-playbook", "ansible-lint") if not shutil.which(t)]
+    if not missing:
+        print("  ansible-playbook + ansible-lint OK.", file=sys.stderr)
+        return
+    print(f"  WARNING: missing {' '.join(missing)} — install with:", file=sys.stderr)
+    if platform.system() == "Darwin":
+        print("    brew install ansible ansible-lint", file=sys.stderr)
+    elif platform.system() == "Linux":
+        print("    sudo apt-get install -y ansible-core && pipx install ansible-lint",
+              file=sys.stderr)
+    else:
+        print("    pipx install ansible-core ansible-lint", file=sys.stderr)
+
+
 def _check_env_local() -> None:
     print("Checking .env.local …", file=sys.stderr)
     target = REPO_ROOT / ".env.local"
@@ -296,6 +317,7 @@ def main() -> int:
     _check_cargo_audit()
     _check_cargo_sweep()
     _check_cross()
+    _check_ansible()
     _check_env_local()
     _check_certs()
     _setup_git_hooks()

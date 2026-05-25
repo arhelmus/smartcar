@@ -4,7 +4,7 @@
 # --- USB-Ethernet link to laptop -------------------------------------------
 usb_eth_board_cidr: 10.55.0.1/24
 usb_eth_mac_board: "02:00:00:00:0a:01"
-usb_eth_mac_host:  "02:00:00:00:0a:02"
+usb_eth_mac_host: "02:00:00:00:0a:02"
 
 # --- Mode-select GPIO strap ------------------------------------------------
 # PI16 = SoC bank I, pin 16 = gpiochip1 line 272 on the H618.

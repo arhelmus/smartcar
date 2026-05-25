@@ -24,3 +24,7 @@ scripts/.init
 # run_server detached-mode artifacts
 .smartcar-server.pid
 *.log
+
+# ansible runtime cache (collections/roles/modules pulled to cwd, fact cache)
+.ansible/
+.ansible-lint-cache/
