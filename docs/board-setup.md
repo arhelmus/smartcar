@@ -52,18 +52,33 @@ react to the "device removed" event by cutting Vbus before our AOAP gadget
 can come up. The teardown script `release-udc.sh` is now gone — the new
 sequence makes it dead weight. See `git log` for the rework.)
 
-1. **`usb-mode.service`** runs early. It reads PI16 (`gpiochip1`, line 272) with an internal pull-up via `gpioget`. If the pin is LOW, it creates `/run/usb-car-mode`.
+1. **`systemd-modules-load.service`** (stock systemd unit, runs in sysinit)
+   reads `/etc/modules-load.d/usb-gadget.conf` and `modprobe`s `libcomposite`.
+   That module registers the `usb_gadget` configfs subsystem, which is what
+   creates `/sys/kernel/config/usb_gadget/` — the directory smartcar-server's
+   `setup_gadget()` mkdirs under to define the AOAP accessory. **Loading
+   `libcomposite` has no user-visible USB effect** (no gadget appears on the
+   bus, no UDC is bound); it's pure kernel infrastructure. In dev mode
+   `libcomposite` would also be pulled in transitively by `modprobe g_ether`
+   in the next step — but in car mode g_ether is skipped and nothing else
+   loads it, so we need this explicit load. Without it,
+   `smartcar-server` exits at the very first `mkdir` with `ENOENT` because
+   `/sys/kernel/config/usb_gadget/` doesn't exist.
 
-2. **`g_ether-load.service`** runs `After=usb-mode.service` with
+2. **`usb-mode.service`** runs early. It reads PI16 (`gpiochip1`, line 272) with an internal pull-up via `gpioget`. If the pin is LOW, it creates `/run/usb-car-mode`.
+
+3. **`g_ether-load.service`** runs `After=usb-mode.service` with
    `ConditionPathExists=!/run/usb-car-mode`. In **dev mode** the condition
    passes and it `modprobe`s `g_ether` — USB-Ethernet comes up, `usb0` gets
    `10.55.0.1/24`, SSH works over the USB cable. In **car mode** the service
    is skipped and `g_ether` is **never loaded**; the UDC stays empty.
    `/etc/modules-load.d/usb-gadget.conf` no longer autoloads `g_ether` at
-   `sysinit` for exactly this reason.
+   `sysinit` for exactly this reason — only `libcomposite` (step 1) which
+   is harmless in both modes.
 
-3. **Car mode** (file present): **`smartcar-server.service`** starts
-   directly (no `ExecStartPre` — the UDC is already empty thanks to step 2).
+4. **Car mode** (file present): **`smartcar-server.service`** starts
+   directly (no `ExecStartPre` — the UDC is already empty thanks to step 3,
+   and the configfs root already exists thanks to step 1).
    `smartcar-server --transport usb --bridge ble` claims the empty UDC via
    configfs and brings up the AOAP accessory gadget; the BLE GATT bridge to
    the iOS app comes up in parallel. (The binary's default bridge mode is
@@ -79,7 +94,7 @@ sequence makes it dead weight. See `git log` for the rework.)
 | `/etc/systemd/system/usb-mode.service` | Oneshot service, runs `usb-mode-select.sh` at boot |
 | `/etc/systemd/system/g_ether-load.service` | Loads `g_ether` only when **not** in car mode (`ConditionPathExists=!/run/usb-car-mode`) |
 | `/etc/systemd/system/smartcar-server.service` | Starts `smartcar-server`, conditional on `/run/usb-car-mode` |
-| `/etc/modules-load.d/usb-gadget.conf` | Intentionally **empty** of `g_ether` — see `g_ether-load.service` |
+| `/etc/modules-load.d/usb-gadget.conf` | Loads `libcomposite` only (registers the `usb_gadget` configfs subsystem). Intentionally **excludes** `g_ether` — that's gated by `g_ether-load.service` |
 | `/etc/modprobe.d/g_ether.conf` | Stable MAC addresses for `usb0` (board: `02:00:00:00:0a:01`, laptop: `02:00:00:00:0a:02`) |
 | `/etc/systemd/network/usb0.network` | Static IP `10.55.0.1/24` on `usb0` |
 | `/usr/local/bin/smartcar-server` | Deployed by `scripts/deploy_board.py` |
