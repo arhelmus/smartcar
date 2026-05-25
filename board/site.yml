@@ -2,6 +2,33 @@
   hosts: boards
   gather_facts: true
   become: false
+  pre_tasks:
+    # Fail fast when .env.local wasn't loaded, instead of silently connecting
+    # to "" and timing out. Mirrors common._require_env on the python side.
+    # Runs per host; vars are group-level so the input is identical — cheap.
+    - name: Assert .env.local board vars are populated
+      ansible.builtin.assert:
+        that:
+          - board_host | length > 0
+          - board_user | length > 0
+          - board_mac_host | length > 0
+          - board_mac_dev | length > 0
+        fail_msg: >-
+          BOARD_HOST / BOARD_USER / BOARD_MAC / BOARD_MAC_DEV must come
+          from .env.local. Run `python3 scripts/board_provision.py` (it
+          loads .env.local before invoking ansible). For direct
+          `ansible-playbook` use, first `set -a; . ../.env.local; set +a`.
+
+    # The `apt` module needs python3-apt on the target. Apply normally
+    # auto-installs it, but `--check` cannot. Use `raw` so we don't need
+    # python on the target — bootstraps the bootstrap.
+    - name: Ensure python3-apt is installed (apt module dep)
+      ansible.builtin.raw: >-
+        dpkg-query -W -f='${Status}' python3-apt 2>/dev/null
+        | grep -q 'install ok installed'
+        || (apt-get update -qq && apt-get install -y python3-apt)
+      register: python3_apt_bootstrap
+      changed_when: "'install ok installed' not in python3_apt_bootstrap.stdout"
   roles:
     - base
     - network

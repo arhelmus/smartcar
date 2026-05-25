@@ -32,23 +32,29 @@ Not owned:
 
 ## Usage
 
+Board addressing (`BOARD_HOST`, `BOARD_USER`, `BOARD_MAC`) comes from
+`../.env.local` — the same source the python run scripts use. The blessed
+entry point is `scripts/board_provision.py`, which loads `.env.local`
+before invoking `ansible-playbook`:
+
 ```bash
-cd board
-
-# Smoke-test SSH reachability first.
-ansible -m ping boards
-
-# Dry-run with diffs to see what would change.
-ansible-playbook site.yml --check --diff
+# Dry-run with diffs.
+python3 scripts/board_provision.py -- --check --diff
 
 # Apply.
-ansible-playbook site.yml
+python3 scripts/board_provision.py
 
-# One specific host (when you have multiple boards).
-ansible-playbook site.yml -l orangepi-dev
+# Pass through ansible flags after `--`.
+python3 scripts/board_provision.py -- -l orangepi-dev --tags usb_gadget
+```
 
-# Re-run just one role.
-ansible-playbook site.yml --tags usb_gadget
+Direct `ansible-playbook` invocations work too, but you have to load
+`.env.local` first or the pre-task assert will fail:
+
+```bash
+cd board
+set -a; . ../.env.local; set +a
+ansible-playbook site.yml --check --diff
 ```
 
 ## Adding another board

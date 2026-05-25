@@ -1,8 +1,11 @@
+# ansible_host / ansible_user come from .env.local (BOARD_HOST / BOARD_USER)
+# via lookup('env') — see board/group_vars/all.yml. The wrapper
+# scripts/board_provision.py loads .env.local before invoking ansible.
 all:
   children:
     boards:
       hosts:
         orangepi-dev:
-          ansible_host: 10.55.0.1
-          ansible_user: root
+          ansible_host: "{{ board_host }}"
+          ansible_user: "{{ board_user }}"
           ansible_python_interpreter: /usr/bin/python3
