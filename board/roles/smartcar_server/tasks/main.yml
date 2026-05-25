@@ -6,6 +6,31 @@
       smartcar_transport must be one of: usb, bt, tcp
       (got '{{ smartcar_transport }}'). See group_vars/all.yml.
 
+# Footgun guard: under smartcar_transport=bt the bt unit has no
+# /run/usb-car-mode gate, so a still-installed jumper sends the board into
+# USB car mode at boot — `g_ether-load.service` (ConditionPathExists=
+# !/run/usb-car-mode) gets skipped and SSH-over-USB-Ethernet is gone for
+# the rest of the boot. Make this loud at provision time so the operator
+# fixes it before they lose the only remote-access path.
+- name: Detect USB car-mode trigger (jumper / car-mode-once)
+  ansible.builtin.stat:
+    path: /run/usb-car-mode
+  register: smartcar_usb_car_mode_marker
+  when: smartcar_transport == "bt"
+
+- name: Refuse to deploy bt unit while the USB car-mode jumper is engaged
+  ansible.builtin.assert:
+    that:
+      - not smartcar_usb_car_mode_marker.stat.exists
+    fail_msg: >-
+      smartcar_transport=bt but /run/usb-car-mode exists on the board —
+      the jumper (PI16 to GND) is engaged, or /var/lib/smartcar/car-mode-once
+      was triggered. The bt unit ignores the gate but
+      `g_ether-load.service` is conditional on /run/usb-car-mode being
+      *absent*, so SSH-over-USB-Ethernet is lost on every subsequent
+      boot. Remove the jumper, reboot, and re-run the playbook.
+  when: smartcar_transport == "bt"
+
 - name: Deploy smartcar-server.service unit
   ansible.builtin.template:
     src: smartcar-server.service.j2

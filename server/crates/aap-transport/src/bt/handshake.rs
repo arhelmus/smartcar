@@ -11,14 +11,16 @@
 //! 4. phone → HU: `WIFI_START_RESPONSE { status = SUCCESS }`        — ack
 //! 5. phone → HU: `WIFI_CONNECTION_STATUS { status = SUCCESS }`     — final status
 //!
-//! Some HUs additionally exchange `WIFI_VERSION_REQUEST/RESPONSE` (ids 4/5)
-//! before step 1. We absorb either incoming message-id and echo back a
-//! reasonable response — there is no documented field meaning, just four
-//! ints — so a slightly chattier HU doesn't deadlock us.
+//! Some HUs additionally send `WIFI_VERSION_REQUEST` (id 4) at any point in
+//! the exchange — typically before step 1, but BMW iDrive has been seen to
+//! interleave it. [`recv_handshake_msg`] absorbs it transparently and
+//! replies with a canned `WifiVersionResponse`, so the state machine in
+//! [`run_phone_side`] only sees real AAW step messages.
 
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use bytes::BytesMut;
 use prost::Message as ProstMessage;
 use tracing::{info, warn};
 
@@ -44,30 +46,46 @@ pub struct HandshakeOutcome {
     pub creds: WifiCreds,
 }
 
+/// Read a frame from the HU, transparently handling `WifiVersionRequest`.
+///
+/// If the next message is a `WifiVersionRequest`, we reply with a canned
+/// `WifiVersionResponse` and keep reading until a non-version message
+/// arrives. Field meanings for the version exchange aren't documented;
+/// aa-proxy-rs replies with four small integers and an empty string —
+/// mirror that.
+async fn recv_handshake_msg(
+    framed: &mut Framed,
+    timeout: Duration,
+) -> Result<(MessageId, BytesMut), BtError> {
+    loop {
+        let (id, body) = framed.recv(timeout).await?;
+        if id == MessageId::WifiVersionRequest {
+            let _ = WifiVersionRequest::decode(body.as_ref())?;
+            info!("aaw: WifiVersionRequest — replying with canned WifiVersionResponse");
+            let resp = WifiVersionResponse {
+                unknown_value_a: 1,
+                unknown_value_b: 2,
+                unknown_value_c: None,
+                unknown_value_d: 0,
+            };
+            framed.send(MessageId::WifiVersionResponse, &resp).await?;
+            continue;
+        }
+        return Ok((id, body));
+    }
+}
+
 /// Run the phone-side AAW handshake on an open RFCOMM stream and return what
 /// to do with the result.
 pub async fn run_phone_side(framed: &mut Framed) -> Result<HandshakeOutcome, BtError> {
-    // ── Step 1 (with optional version exchange) ───────────────────────────────
+    // ── Step 1 ───────────────────────────────────────────────────────────────
     let start_req: WifiStartRequest = loop {
-        let (id, body) = framed.recv(STEP_TIMEOUT).await?;
+        let (id, body) = recv_handshake_msg(framed, STEP_TIMEOUT).await?;
         match id {
             MessageId::WifiStartRequest => {
                 let req = WifiStartRequest::decode(body.as_ref())?;
                 info!(ip = %req.ip_address, port = req.port, "aaw: WifiStartRequest from HU");
                 break req;
-            }
-            MessageId::WifiVersionRequest => {
-                info!("aaw: optional WifiVersionRequest seen, replying");
-                let _ = WifiVersionRequest::decode(body.as_ref())?;
-                // Field meanings are not documented; aa-proxy-rs answers with
-                // four small ints and an empty string. Mirror that.
-                let resp = WifiVersionResponse {
-                    unknown_value_a: 1,
-                    unknown_value_b: 2,
-                    unknown_value_c: None,
-                    unknown_value_d: 0,
-                };
-                framed.send(MessageId::WifiVersionResponse, &resp).await?;
             }
             other => {
                 warn!(?other, "aaw: unexpected message during step 1; ignoring");
@@ -82,7 +100,7 @@ pub async fn run_phone_side(framed: &mut Framed) -> Result<HandshakeOutcome, BtE
 
     // ── Step 3 ───────────────────────────────────────────────────────────────
     let info_resp: WifiInfoResponse = loop {
-        let (id, body) = framed.recv(STEP_TIMEOUT).await?;
+        let (id, body) = recv_handshake_msg(framed, STEP_TIMEOUT).await?;
         match id {
             MessageId::WifiInfoResponse => break WifiInfoResponse::decode(body.as_ref())?,
             other => warn!(?other, "aaw: unexpected message during step 3; ignoring"),

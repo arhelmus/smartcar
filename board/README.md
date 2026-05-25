@@ -54,13 +54,13 @@ Pairing is **car-initiated**. On the first boot under `--transport bt`,
    without any board-side UI.
 3. Polls for a paired AAW peer every 5 s, logging
    `bt: no paired AAW peer yet — open the car's Android Auto Wireless
-   setup and select Smartcar to pair` until one appears.
+   setup and select smartcar to pair` until one appears.
 
 On the car:
 
 1. Open **Settings → Android Auto / CarPlay → Add new device** (exact path
    varies by HU).
-2. The car scans BR/EDR and lists `Smartcar`.
+2. The car scans BR/EDR and lists `smartcar`.
 3. Tap it. The car shows a Just Works confirmation prompt; accept.
 
 BlueZ caches the bond. Subsequent boots find the bonded peer in <1 s, no

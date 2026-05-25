@@ -48,7 +48,7 @@ pub enum BtError {
 
     #[error(
         "no paired AAW-capable device found within timeout — open the car's \
-         Android Auto Wireless setup and pick `Smartcar` to pair"
+         Android Auto Wireless setup and pick `smartcar` to pair"
     )]
     NoAawPairedDevice,
 

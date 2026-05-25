@@ -2,7 +2,7 @@
 //!
 //! AAW pairing flow is **car-initiated**: the user opens Android Auto
 //! Wireless setup on the head unit, the HU scans BR/EDR, the operator picks
-//! `Smartcar` on the car's UI, the HU sends the pair request, and BlueZ
+//! `smartcar` on the car's UI, the HU sends the pair request, and BlueZ
 //! accepts it via the Just Works agent registered here. The board never
 //! initiates pairing (`bluetoothctl pair`), and the operator never has to
 //! type a BD_ADDR anywhere.
@@ -26,7 +26,7 @@ use super::rfcomm::AAWG_PROFILE_UUID;
 
 /// Adapter alias advertised on BR/EDR (and used as the BLE local name if/when
 /// we add LE advertising). Cars see this in their AA Wireless pair list.
-const ADVERTISED_NAME: &str = "Smartcar";
+const ADVERTISED_NAME: &str = "smartcar";
 
 /// Power the default adapter, make it discoverable + pairable, and register
 /// a Just Works agent so an incoming pair request from the car is accepted
@@ -44,7 +44,7 @@ pub async fn open_adapter() -> Result<(Session, Adapter, AgentHandle), BtError> 
 
     // BlueZ advertises the *alias*, not the adapter's kernel name. Without
     // an explicit alias the car sees the hostname (e.g. `orangepizero2w`)
-    // instead of `Smartcar`. set_alias persists to /var/lib/bluetooth so
+    // instead of `smartcar`. set_alias persists to /var/lib/bluetooth so
     // subsequent boots come up with the right name even before this point.
     adapter.set_alias(ADVERTISED_NAME.into()).await?;
 
@@ -105,7 +105,7 @@ pub async fn wait_for_aaw_device(adapter: &Adapter, timeout: Duration) -> Result
         if !announced_wait {
             info!(
                 "bt: no paired AAW peer yet — open the car's Android Auto \
-                 Wireless setup and select `Smartcar` to pair"
+                 Wireless setup and select `smartcar` to pair"
             );
             announced_wait = true;
         }
@@ -113,14 +113,31 @@ pub async fn wait_for_aaw_device(adapter: &Adapter, timeout: Duration) -> Result
     }
 }
 
-/// Scan the adapter's paired-device list, return the first one whose cached
-/// SDP UUIDs include the AAWG profile.
+/// Find a paired AAW-capable peer on the adapter.
 ///
-/// Returns `Ok(None)` if no paired device matches — caller decides whether
-/// to wait or fail. SDP-resolution edge case: a paired device whose
-/// services have not yet been browsed has `uuids = None`; we treat that as
-/// "not yet" rather than "definitely not" so the polling caller retries.
+/// Two-pass scan:
+///
+///  1. **Fast path (SDP UUID filter).** For each paired device, check whether
+///     BlueZ has cached `AAWG_PROFILE_UUID` in `device.uuids()`. BlueZ
+///     normally does an SDP browse right after a successful pair, so on the
+///     happy path this pass returns the bond immediately.
+///
+///  2. **Fallback (RFCOMM probe).** Some HUs / older BlueZ versions don't
+///     reliably push the AAWG record into the SDP descriptors `bluer`
+///     exposes — we then see `uuids = Some({})` or a set missing the AAWG
+///     UUID and would otherwise wait forever. Second pass tries to actually
+///     `Stream::connect(addr, 8)` on each paired device (short 2 s timeout).
+///     A successful TCP-style connect proves the peer accepts the AAWG
+///     RFCOMM channel; we drop the probe stream and let the caller open
+///     the real one. Connect-refused / -unreachable peers are silently
+///     skipped.
+///
+/// Returns `Ok(None)` if both passes find nothing — caller decides whether
+/// to wait or fail.
 async fn find_aaw_device(adapter: &Adapter) -> Result<Option<Device>, BtError> {
+    let mut paired_unresolved: Vec<Device> = Vec::new();
+
+    // Pass 1: SDP UUID filter. Cheap; no over-the-air traffic.
     for addr in adapter.device_addresses().await? {
         let device = adapter.device(addr)?;
         if !device.is_paired().await? {
@@ -128,18 +145,38 @@ async fn find_aaw_device(adapter: &Adapter) -> Result<Option<Device>, BtError> {
         }
         match device.uuids().await? {
             Some(uuids) if uuids.contains(&AAWG_PROFILE_UUID) => {
-                debug!(%addr, "bt: paired device exposes AAWG profile");
+                debug!(%addr, "bt: paired device exposes AAWG profile (SDP)");
                 return Ok(Some(device));
             }
-            Some(_) => {
-                debug!(%addr, "bt: paired device has no AAWG profile, skipping");
-            }
-            None => {
-                debug!(%addr, "bt: paired device SDP not resolved yet, skipping");
-            }
+            _ => paired_unresolved.push(device),
         }
     }
+
+    // Pass 2: RFCOMM probe. Skipped entirely if there are no paired devices
+    // — keeps a board with zero bonds quiet between polling iterations.
+    for device in paired_unresolved {
+        let addr = device.address();
+        if probe_rfcomm_aawg(addr).await {
+            debug!(%addr, "bt: paired device accepts RFCOMM channel 8 (probe)");
+            return Ok(Some(device));
+        }
+    }
+
     Ok(None)
+}
+
+/// Open + immediately close an RFCOMM connection on the AAWG channel as a
+/// liveness probe. Returns true only if the channel accepted us. 2 s budget
+/// per device — long enough for a real HU to reply, short enough that a
+/// dead bond doesn't stall the polling loop.
+async fn probe_rfcomm_aawg(addr: bluer::Address) -> bool {
+    use super::rfcomm::AAWG_DEFAULT_RFCOMM_CHANNEL;
+    let sa = bluer::rfcomm::SocketAddr::new(addr, AAWG_DEFAULT_RFCOMM_CHANNEL);
+    let probe = tokio::time::timeout(
+        Duration::from_secs(2),
+        bluer::rfcomm::Stream::connect(sa),
+    );
+    matches!(probe.await, Ok(Ok(_)))
 }
 
 /// Best-effort `Connect()` on the paired device so BlueZ brings up any

@@ -64,7 +64,7 @@ enum TransportChoice {
     /// handshake, joins the HU's hotspot, and TCP-connects outward.
     ///
     /// Pairing is **car-initiated** — open the car's AA Wireless setup,
-    /// select `Smartcar`, accept Just Works. The bond is then cached and
+    /// select `smartcar`, accept Just Works. The bond is then cached and
     /// reused automatically. No CLI flag, no env var, no `bluetoothctl`.
     /// See `docs/board-setup.md`. Linux only.
     Bt,

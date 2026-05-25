@@ -263,7 +263,7 @@ for a custom GATT advertisement. Board scripts default to `--bridge none`.
    discoverable with `Class=0x6c020c` (phone) and registers a Just Works
    agent that auto-accepts any incoming pair request. On the car: open
    **Android Auto / CarPlay → Add new device** (path varies by HU), the
-   car scans BR/EDR, lists `Smartcar`, the operator selects it, the car
+   car scans BR/EDR, lists `smartcar`, the operator selects it, the car
    sends the pair request, BlueZ accepts via the agent, the bond is
    cached. No `bluetoothctl pair` on the board, no BD_ADDR to type, no
    env var to set.

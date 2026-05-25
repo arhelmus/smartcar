@@ -222,7 +222,7 @@ def _check_bt_advertisement(board: str, user: str) -> int:
       - Powered: yes
       - Pairable: yes
       - Discoverable: yes
-      - Alias = "Smartcar" (set by bt::pair::open_adapter — the alias, not
+      - Alias = "smartcar" (set by bt::pair::open_adapter — the alias, not
         the kernel device name, is what cars actually see in their list)
       - Class non-zero (the bluetooth role sets 0x6c020c — "phone")
     Also greps the smartcar-server journal for the agent-registered log
@@ -257,7 +257,7 @@ def _check_bt_advertisement(board: str, user: str) -> int:
             last_fields.get("Powered") == "yes"
             and last_fields.get("Pairable") == "yes"
             and last_fields.get("Discoverable") == "yes"
-            and last_fields.get("Alias") == "Smartcar"
+            and last_fields.get("Alias") == "smartcar"
             and last_fields.get("Class", "0x00000000") not in {"0x00000000", "0x0"}
         ):
             break

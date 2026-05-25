@@ -12,7 +12,7 @@
 //! # Operator flow
 //!
 //! Pairing is **car-initiated**: open the car's AA Wireless setup, pick
-//! `Smartcar`, accept Just Works. No `--bt-target`, no `bluetoothctl pair`,
+//! `smartcar`, accept Just Works. No `--bt-target`, no `bluetoothctl pair`,
 //! no env var. After the first pairing the bond is cached in BlueZ and
 //! subsequent boots auto-resume.
 //!
@@ -49,9 +49,11 @@ use crate::TcpTransport;
 pub struct BtConfig {
     /// How long to keep the adapter discoverable + Just Works agent
     /// registered while waiting for the operator to pair the car. Default
-    /// 5 minutes — generous enough for the operator to walk to the car,
-    /// open AA setup, and tap `Smartcar`, but bounded so a misconfigured
-    /// board fails fast rather than burning power forever.
+    /// 10 minutes per attempt — generous enough for an operator to drive
+    /// up, open AA setup, and tap `smartcar`. When this elapses the unit
+    /// exits and systemd restarts us (no `StartLimitBurst` on the bt
+    /// branch of the unit template), so practically the board advertises
+    /// for as long as it's powered.
     pub pair_wait_timeout: Duration,
     /// Timeout for the BlueZ Device.Connect() warm-up after we found the
     /// paired AAW peer. Default 8 s.
@@ -69,7 +71,7 @@ pub struct BtConfig {
 impl Default for BtConfig {
     fn default() -> Self {
         Self {
-            pair_wait_timeout: Duration::from_secs(300),
+            pair_wait_timeout: Duration::from_secs(600),
             bt_connect_timeout: Duration::from_secs(8),
             rfcomm_connect_timeout: Duration::from_secs(8),
             wifi_join_timeout: Duration::from_secs(25),
@@ -100,7 +102,7 @@ impl BtTransport {
         let (_session, adapter, _agent) = pair::open_adapter().await?;
 
         // 2. Wait for a paired AAW peer to appear. On first boot the
-        // operator opens AA Wireless on the car and selects `Smartcar`;
+        // operator opens AA Wireless on the car and selects `smartcar`;
         // BlueZ accepts Just Works via the agent above, the bond is
         // cached, and this function returns. On subsequent boots the bond
         // is already there and this returns immediately.
