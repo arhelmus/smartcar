@@ -1,0 +1,12 @@
+- name: Provision smartcar board
+  hosts: boards
+  gather_facts: true
+  become: false
+  roles:
+    - base
+    - network
+    - usb_gadget
+    - journal
+    - fake_hwclock
+    - smartcar_server
+    - bluetooth

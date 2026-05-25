@@ -1,0 +1,14 @@
+[Unit]
+Description=Load g_ether USB-Ethernet gadget (dev mode only — gated by usb-mode.service)
+After=usb-mode.service local-fs.target sysinit.target
+Requires=usb-mode.service
+Before=usb-gadget.target
+ConditionPathExists=!/run/usb-car-mode
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/sbin/modprobe g_ether
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+- name: Deploy smartcar-server.service unit
+  ansible.builtin.template:
+    src: smartcar-server.service.j2
+    dest: /etc/systemd/system/smartcar-server.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: daemon-reload
+
+- name: Flush handlers before enable
+  ansible.builtin.meta: flush_handlers
+
+# Enabled, not started. ConditionPathExists=/run/usb-car-mode gates it
+# to boots where usb-mode.service decided car mode.
+- name: Enable smartcar-server.service
+  ansible.builtin.systemd:
+    name: smartcar-server.service
+    enabled: true

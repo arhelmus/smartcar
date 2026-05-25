@@ -1,0 +1,50 @@
+#!/bin/bash
+# Reads header {{ mode_select_pin_label }} to select USB mode at boot.
+#
+# Board: Orange Pi Zero 2W v1.1 — 40-pin header.
+# Wiring:
+#   CAR mode  — jumper between pin 37 (PI16) and pin 39 (GND) -> PI16 reads LOW
+#   DEV mode  — no jumper, internal pull-up holds PI16 HIGH (default/safe)
+#
+# Software override (one-shot): if /var/lib/smartcar/car-mode-once exists,
+# it forces CAR mode for this boot and is deleted before the GPIO read,
+# so the *next* boot reverts to whatever the jumper says. Lets us trigger
+# a car-mode boot from SSH without touching hardware.
+#
+# When the override path is taken we also schedule an automatic reboot
+# after 30 s via a transient systemd unit, so an iteration loop can
+# complete unattended: trigger -> car mode boot -> 30 s of smartcar-server
+# attempts -> auto-revert back to dev mode -> SSH returns -> read logs.
+#
+# PI16 = SoC bank I, pin 16 = {{ mode_select_gpiochip }} (300b000.pinctrl) line {{ mode_select_gpioline }} on the H618.
+# Creates /run/usb-car-mode when in car mode; absent = dev mode.
+
+set -euo pipefail
+
+OVERRIDE="{{ smartcar_state_dir }}/car-mode-once"
+CHIP="{{ mode_select_gpiochip }}"
+LINE={{ mode_select_gpioline }}  # PI16 (header pin 37)
+
+# Override path runs first; on success we never touch the GPIO. rm first
+# so a failed rm aborts the script (set -e) BEFORE we commit to car mode —
+# losing SSH because of a stuck override would be a foot-gun.
+if [ -e "$OVERRIDE" ]; then
+    rm -f "$OVERRIDE"
+    touch /run/usb-car-mode
+    # The transient unit owns its own cgroup and survives this oneshot
+    # exiting (systemd-run defers the spawn to systemd's PID 1).
+    # --on-active=30s = fire 30 s after the timer activates, which is now.
+    systemd-run --on-active=30s --unit=usb-car-auto-revert.service \
+        /sbin/reboot >/dev/null 2>&1 || true
+    logger -t usb-mode "$OVERRIDE consumed: CAR mode this boot, auto-revert in 30s"
+    exit 0
+fi
+
+VALUE=$(gpioget --chip "$CHIP" --bias pull-up --numeric "$LINE")
+
+if [ "$VALUE" = "0" ]; then
+    touch /run/usb-car-mode
+    logger -t usb-mode "{{ mode_select_pin_label }} LOW: CAR mode — USB port will be claimed by smartcar-server"
+else
+    logger -t usb-mode "{{ mode_select_pin_label }} HIGH: DEV mode — USB Ethernet active"
+fi

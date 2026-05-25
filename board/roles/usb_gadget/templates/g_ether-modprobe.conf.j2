@@ -1,0 +1,4 @@
+# Stable, locally-administered MAC addresses for the USB ethernet gadget
+# dev_addr  = the Orange Pi's usb0 interface
+# host_addr = the interface the Mac sees
+options g_ether dev_addr={{ usb_eth_mac_board }} host_addr={{ usb_eth_mac_host }}

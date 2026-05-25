@@ -1,0 +1,11 @@
+# Bluetooth bring-up is planned but not yet on the board. See
+# docs/board-setup.md §Bluetooth for the design (A2DP sink + PAN/BNEP +
+# custom GATT control plane). Files this role will eventually own:
+#   /etc/systemd/system/bluetooth.service.d/override.conf
+#   /etc/pipewire/pipewire.conf.d/50-bluetooth.conf
+#   /etc/systemd/network/bnep0.network
+#   /usr/local/sbin/pan-connect.sh
+#   /etc/systemd/system/pan-connect@.service
+- name: Bluetooth role placeholder (no-op until the planned work lands)
+  ansible.builtin.debug:
+    msg: "bluetooth role is a stub — see board/README.md and docs/board-setup.md"

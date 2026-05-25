@@ -1,0 +1,6 @@
+# Drop-in tuning for journald on the board.
+# Persistence is implicit: Storage=auto + /var/log/journal present.
+# SyncIntervalSec is small so a power-loss boot still has its last line on disk.
+[Journal]
+SystemMaxUse={{ journal_max_use }}
+SyncIntervalSec={{ journal_sync_interval }}

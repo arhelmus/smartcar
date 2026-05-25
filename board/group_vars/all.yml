@@ -1,0 +1,38 @@
+# Single source of truth for board provisioning variables.
+# Override per-host in inventory.yml or per-group in group_vars/<group>.yml.
+
+# --- USB-Ethernet link to laptop -------------------------------------------
+usb_eth_board_cidr: 10.55.0.1/24
+usb_eth_mac_board: "02:00:00:00:0a:01"
+usb_eth_mac_host:  "02:00:00:00:0a:02"
+
+# --- Mode-select GPIO strap ------------------------------------------------
+# PI16 = SoC bank I, pin 16 = gpiochip1 line 272 on the H618.
+# Header pin 37 jumpered to pin 39 (GND) -> LOW -> car mode.
+mode_select_gpiochip: gpiochip1
+mode_select_gpioline: 272
+mode_select_pin_label: "pin 37 (PI16)"
+
+# --- Journal --------------------------------------------------------------
+# /var/log/journal -> /var/log.hdd/journal; tuned to capture unclean
+# power-loss in the car (SyncIntervalSec is small so the last line of a
+# truncated boot is on disk).
+journal_persistent_path: /var/log.hdd/journal
+journal_max_use: 500M
+journal_sync_interval: 1s
+
+# --- smartcar-server ------------------------------------------------------
+smartcar_state_dir: /var/lib/smartcar
+smartcar_binary: /usr/local/bin/smartcar-server
+smartcar_rust_log: "info,aap_core=debug,aap_audio=debug,aap_transport=debug"
+# Args to smartcar-server in car mode. The deployed unit currently passes
+# only `--transport usb`; CLAUDE.md mentions `--bridge ble` as the eventual
+# car-mode invocation once the BLE bridge lands. Toggle via inventory.
+smartcar_extra_args: ""
+
+# --- Packages -------------------------------------------------------------
+base_packages:
+  - gpiod          # gpioget(1), used by usb-mode-select.sh
+  - fake-hwclock   # no-RTC time persistence (split-unit form)
+  - rsync          # target for scripts/deploy_board.py
+  - openssh-server # never lose remote access

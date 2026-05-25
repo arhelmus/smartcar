@@ -1,0 +1,17 @@
+[Unit]
+Description=smartcar Android Auto projection (car mode — USB AOAP)
+After=usb-mode.service
+Requires=usb-mode.service
+ConditionPathExists=/run/usb-car-mode
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+Environment=RUST_LOG={{ smartcar_rust_log }}
+ExecStart={{ smartcar_binary }} --transport usb{% if smartcar_extra_args %} {{ smartcar_extra_args }}{% endif %}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

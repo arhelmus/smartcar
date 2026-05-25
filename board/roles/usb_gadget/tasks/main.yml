@@ -1,0 +1,75 @@
+- name: Ensure smartcar state directory exists
+  ansible.builtin.file:
+    path: "{{ smartcar_state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy libcomposite module autoload
+  ansible.builtin.copy:
+    src: usb-gadget.conf
+    dest: /etc/modules-load.d/usb-gadget.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+# Defensive: g_ether must NEVER appear in modules-load.d. Auto-loading it
+# at sysinit makes the UDC come up as USB-Ethernet briefly even in car
+# mode, and at least one production HU reacts to the subsequent "device
+# removed" event by cutting Vbus before our AOAP gadget can bind.
+- name: Assert g_ether is NOT autoloaded (would break car-mode HU enumeration)
+  ansible.builtin.lineinfile:
+    path: /etc/modules-load.d/usb-gadget.conf
+    regexp: '^\s*g_ether\s*$'
+    state: absent
+
+- name: Deploy g_ether MAC pinning
+  ansible.builtin.template:
+    src: g_ether-modprobe.conf.j2
+    dest: /etc/modprobe.d/g_ether.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Deploy usb-mode-select.sh
+  ansible.builtin.template:
+    src: usb-mode-select.sh.j2
+    dest: /usr/local/sbin/usb-mode-select.sh
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy usb-mode.service unit
+  ansible.builtin.copy:
+    src: usb-mode.service
+    dest: /etc/systemd/system/usb-mode.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: daemon-reload
+
+- name: Deploy g_ether-load.service unit
+  ansible.builtin.copy:
+    src: g_ether-load.service
+    dest: /etc/systemd/system/g_ether-load.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: daemon-reload
+
+- name: Flush handlers before enable
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable usb-mode.service
+  ansible.builtin.systemd:
+    name: usb-mode.service
+    enabled: true
+
+# Enabled, NOT (re)started. Starting g_ether-load now would tear down
+# usb0 and kill our SSH session; the unit is a boot-time oneshot and
+# changes take effect on the next reboot.
+- name: Enable g_ether-load.service
+  ansible.builtin.systemd:
+    name: g_ether-load.service
+    enabled: true

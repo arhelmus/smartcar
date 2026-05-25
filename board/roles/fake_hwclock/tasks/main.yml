@@ -1,0 +1,30 @@
+# H618 has no battery-backed RTC. The split fake-hwclock-load/-save pair
+# restores wall time at early boot and snapshots it on shutdown + via a
+# timer. The monolithic fake-hwclock.service is intentionally masked —
+# it conflicts with the split form on modern Debian.
+
+- name: Ensure fake-hwclock is installed
+  ansible.builtin.apt:
+    name: fake-hwclock
+    state: present
+
+- name: Mask monolithic fake-hwclock.service (superseded by split form)
+  ansible.builtin.systemd:
+    name: fake-hwclock.service
+    masked: true
+
+- name: Enable fake-hwclock-load.service
+  ansible.builtin.systemd:
+    name: fake-hwclock-load.service
+    enabled: true
+
+- name: Enable fake-hwclock-save.service
+  ansible.builtin.systemd:
+    name: fake-hwclock-save.service
+    enabled: true
+
+- name: Enable fake-hwclock-save.timer
+  ansible.builtin.systemd:
+    name: fake-hwclock-save.timer
+    enabled: true
+    state: started
