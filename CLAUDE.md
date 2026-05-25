@@ -55,9 +55,15 @@ For any question about the AA wire protocol, **consult `docs/protocol/` first**:
 | https://github.com/tomasz-grobelny/AACS | Server (`AAServer`) — **behavioural ground truth** | `server/third_party/AACS` |
 | https://github.com/opencardev/aasdk | Client lib — framing, message-id enums, full channel catalog | `server/third_party/aasdk` |
 | https://github.com/opencardev/AAProto | Protocol — canonical protobuf schemas | `server/third_party/AAProto` |
+| https://github.com/aa-proxy/aa-proxy-rs | **Transport reference** — how to wire USB AOAP gadget + wireless AA on Linux (same hardware class: Pi Zero 2 W / Orange Pi Zero 2W) | `server/third_party/aa-proxy-rs` |
 
 When validating a protocol doc claim:
 1. Check AACS `AAServer/src/` for **behavioural** truth (state machines, call order, blocking).
 2. Check `AAProto/*.proto` for **schema** truth (field numbers, enum values).
 3. Use `aasdk/include/aasdk/Channel/**` for the **full channel catalog** (channels AACS doesn't implement).
 4. The authoritative enum file is `AACS/include/enums.h` (repo root `include/`), **not** `AAServer/include/enums.h`.
+5. For **transport-layer** questions — how the gadget claims the UDC, AOAP mode-switch sequencing, wireless AA WiFi/BT pairing dance, reconnection logic — read `aa-proxy-rs/src/`. It targets the same Pi-class single-board Linux boxes we run on (Pi Zero 2 W / Orange Pi Zero 2W). The closest working reference for the patterns smartcar-server reimplements:
+   - `aoa.rs` + `usb_gadget.rs` + `usb_stream.rs` — USB AOAP gadget bring-up and the I/O loop on the UDC
+   - `bluetooth.rs` + `bt_helper.rs` + `btle.rs` — wireless AA pairing and the BT/BLE handshake the phone expects
+   - `proxy.rs` — the main wire-up tying transport → AA framing
+   - `io_uring.rs` — io_uring-based async I/O on the gadget side (we don't use this yet; relevant if/when we move off blocking reads)

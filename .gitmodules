@@ -10,3 +10,6 @@
 [submodule "server/third_party/AACS"]
 	path = server/third_party/AACS
 	url = https://github.com/tomasz-grobelny/AACS
+[submodule "server/third_party/aa-proxy-rs"]
+	path = server/third_party/aa-proxy-rs
+	url = https://github.com/aa-proxy/aa-proxy-rs
