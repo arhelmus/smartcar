@@ -28,7 +28,7 @@ ansible provision + systemd restart + healthcheck. Prereqs are a
 USB-Ethernet cable to the board and the laptop side already configured:
 
 ```sh
-sudo python3 scripts/assign_board.py    # one-time, per session
+make assign                              # one-time per session (sudo prompt)
 make deploy                              # full deploy
 make deploy -- --check                   # ansible --check --diff, no restart
 make deploy -- --skip-build              # use the binary already on the board

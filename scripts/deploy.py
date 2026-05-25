@@ -81,8 +81,7 @@ def _preflight() -> int:
     if not laptop_ip:
         print(
             "ERROR: laptop USB-Ethernet interface has no IP — the board is not reachable.\n"
-            "       Run first (sudo required):\n"
-            "         python3 scripts/assign_board.py",
+            "       Run first:  make assign   (or `sudo python3 scripts/assign_board.py`)",
             file=sys.stderr,
         )
         return 1
