@@ -24,6 +24,10 @@ use tracing::{debug, info, warn};
 use super::error::BtError;
 use super::rfcomm::AAWG_PROFILE_UUID;
 
+/// Adapter alias advertised on BR/EDR (and used as the BLE local name if/when
+/// we add LE advertising). Cars see this in their AA Wireless pair list.
+const ADVERTISED_NAME: &str = "Smartcar";
+
 /// Power the default adapter, make it discoverable + pairable, and register
 /// a Just Works agent so an incoming pair request from the car is accepted
 /// without operator intervention. The returned `AgentHandle` keeps the
@@ -37,6 +41,12 @@ pub async fn open_adapter() -> Result<(Session, Adapter, AgentHandle), BtError> 
         info!("bt: adapter not powered, powering on");
         adapter.set_powered(true).await?;
     }
+
+    // BlueZ advertises the *alias*, not the adapter's kernel name. Without
+    // an explicit alias the car sees the hostname (e.g. `orangepizero2w`)
+    // instead of `Smartcar`. set_alias persists to /var/lib/bluetooth so
+    // subsequent boots come up with the right name even before this point.
+    adapter.set_alias(ADVERTISED_NAME.into()).await?;
 
     // Car initiates pairing. We have to be findable and acceptive:
     //   discoverable=on  — so the car's BT scan sees our advertisement.
@@ -66,7 +76,7 @@ pub async fn open_adapter() -> Result<(Session, Adapter, AgentHandle), BtError> 
 
     info!(
         addr = %adapter.address().await?,
-        name = ?adapter.name(),
+        alias = %adapter.alias().await?,
         "bt: adapter ready, discoverable + Just Works agent registered"
     );
     Ok((session, adapter, agent_handle))

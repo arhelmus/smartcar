@@ -222,6 +222,8 @@ def _check_bt_advertisement(board: str, user: str) -> int:
       - Powered: yes
       - Pairable: yes
       - Discoverable: yes
+      - Alias = "Smartcar" (set by bt::pair::open_adapter — the alias, not
+        the kernel device name, is what cars actually see in their list)
       - Class non-zero (the bluetooth role sets 0x6c020c — "phone")
     Also greps the smartcar-server journal for the agent-registered log
     line, so we know the Just Works agent that accepts car-initiated pair
@@ -255,6 +257,7 @@ def _check_bt_advertisement(board: str, user: str) -> int:
             last_fields.get("Powered") == "yes"
             and last_fields.get("Pairable") == "yes"
             and last_fields.get("Discoverable") == "yes"
+            and last_fields.get("Alias") == "Smartcar"
             and last_fields.get("Class", "0x00000000") not in {"0x00000000", "0x0"}
         ):
             break
@@ -266,6 +269,7 @@ def _check_bt_advertisement(board: str, user: str) -> int:
             f"Powered={last_fields.get('Powered')} "
             f"Pairable={last_fields.get('Pairable')} "
             f"Discoverable={last_fields.get('Discoverable')} "
+            f"Alias={last_fields.get('Alias')!r} "
             f"Class={last_fields.get('Class')}",
             file=sys.stderr,
         )
@@ -291,8 +295,9 @@ def _check_bt_advertisement(board: str, user: str) -> int:
     # Class includes a decimal annotation ("0x0040020c (4194828)"); strip it.
     klass = last_fields.get("Class", "?").split()[0]
     addr  = last_fields.get("Controller", "?")
+    alias = last_fields.get("Alias", "?")
     print(
-        f"  ✓ BT advertising as `Smartcar`: addr={addr} Class={klass} "
+        f"  ✓ BT advertising as `{alias}`: addr={addr} Class={klass} "
         "Pairable=yes Discoverable=yes — agent registered",
         file=sys.stderr,
     )
