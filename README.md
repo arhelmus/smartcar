@@ -34,9 +34,6 @@ make deploy -- --check                   # ansible --check --diff, no restart
 make deploy -- --skip-build              # use the binary already on the board
 ```
 
-The board must be in CAR mode for the restart to take effect — see
-`docs/board-setup.md`.
-
 ## Review
 
 The repository has an automated review pipeline that runs on every `git
