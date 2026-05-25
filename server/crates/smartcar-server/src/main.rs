@@ -147,90 +147,25 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for FlushingStdout {
     }
 }
 
-/// Flight-recorder checkpoint that bypasses tracing/journald entirely.
+/// Boot/handshake checkpoints used to pin down at which point in `main()`
+/// (or in the USB gadget bring-up) the binary dies on car-mode boots — when
+/// the head unit cuts Vbus, the journal may stop mid-handshake. All sites
+/// emit at `info` level under the `flight` target, so `RUST_LOG=flight=info`
+/// (or simply the default `info` filter) keeps them visible:
 ///
-/// Appends `step` (with the current PID and a monotonic-ish timestamp)
-/// directly to a persistent log file and `fsync`s before returning.
-/// Used to pin down at which point in `main()` the binary dies on car-mode
-/// boots — journald goes through systemd's stdout pipe and may lose data
-/// across a Vbus cut, but a direct `sync_all` on a real file is the most
-/// durable thing we can do from userspace.
-///
-/// **Path matters**: on the board, `/var/log` is `zram1` (RAM-backed
-/// tmpfs that evaporates on power cut) and `/var/log.hdd` is the
-/// persistent eMMC mount that survives.  We try the `.hdd` path first
-/// so this works on the board, and fall back to the conventional
-/// `/var/log` for dev hosts / containers that don't have that layout.
-///
-/// Errors are intentionally swallowed: this is a diagnostic side-channel,
-/// not a load-bearing operation.
-fn flight_log(step: &str) {
-    use std::io::Write;
-    use std::sync::OnceLock;
-    // PPID via libc; lets us tell at a glance which process launched us
-    // (systemd=1, a shell, a `systemd-run` transient unit, …).
-    unsafe extern "C" {
-        fn getppid() -> i32;
-    }
-    let pid = std::process::id();
-    let ppid = unsafe { getppid() };
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0);
-
-    // First flight_log() call in this process writes a separator that
-    // delimits each run in the persistent log. Without it, the board's
-    // fake-hwclock (no RTC) gives every boot the same restored wall-clock
-    // start time, and rapid car-mode reboot loops produce a single file
-    // with PID/timestamp orderings that look like parallel processes
-    // (they aren't — they're sequential boots). `boot_id` is the only
-    // value that genuinely changes across kernel reboots, so it's the
-    // right primary key.
-    static SEPARATOR_WRITTEN: OnceLock<()> = OnceLock::new();
-    let is_first_call = SEPARATOR_WRITTEN.set(()).is_ok();
-    let boot_id = if is_first_call {
-        std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|_| "<no-boot-id>".to_string())
-    } else {
-        String::new()
-    };
-
-    for path in [
-        "/var/log.hdd/smartcar-boot.log",
-        "/var/log/smartcar-boot.log",
-    ] {
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-        {
-            if is_first_call {
-                let _ = writeln!(
-                    f,
-                    "\n=== process start  pid={pid} ppid={ppid} t={elapsed:.3} boot_id={boot_id} ==="
-                );
-            }
-            let _ = writeln!(f, "{elapsed:.3}  pid={pid} ppid={ppid}  {step}");
-            let _ = f.sync_all();
-            return;
-        }
-    }
-}
-
+///   journalctl -u smartcar-server -b -1 | grep flight
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Checkpoint #0 — VERY first thing in main(). If this line is absent
     // after a car-mode boot, the binary never reached `main()` (dynamic
     // linker failure, libflutter_engine.so resolution issue, etc.).
-    flight_log("main: entered");
+    tracing::info!(target: "flight", "main: entered");
 
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(FlushingStdout)
         .init();
-    flight_log("main: tracing_subscriber initialized");
+    tracing::info!(target: "flight", "main: tracing_subscriber initialized");
 
     // First log line of the binary. With per-event flushing installed above,
     // even a Vbus cut immediately after this returns leaves "smartcar-server
@@ -241,10 +176,8 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(pid = std::process::id(), "smartcar-server: starting");
 
     let args = Args::parse();
-    flight_log(&format!(
-        "main: args parsed transport={:?} bridge={:?} testkit={}",
-        args.transport, args.bridge, args.testkit
-    ));
+    tracing::info!(target: "flight", "main: args parsed transport={:?} bridge={:?} testkit={}",
+        args.transport, args.bridge, args.testkit);
 
     // ── iOS-app bridge ────────────────────────────────────────────────────────
     // Independent of the AA transport: a control plane the iOS app talks to
@@ -287,7 +220,7 @@ async fn main() -> anyhow::Result<()> {
     // VM init, ~1 s) loads after this point, while the host is already happy
     // talking to a real device. On the board's car-mode boot this is the
     // difference between the head unit cutting Vbus mid-startup and not.
-    flight_log("main: bringing up transport");
+    tracing::info!(target: "flight", "main: bringing up transport");
     let advertised = advertise(&SOFTWARE_CAPS);
 
     match args.transport {
@@ -296,7 +229,7 @@ async fn main() -> anyhow::Result<()> {
             let stream = TcpStream::connect(&args.target).await?;
             tracing::info!("TCP connection established");
             let transport = TcpTransport::new(stream);
-            flight_log("main: transport up (TCP)");
+            tracing::info!(target: "flight", "main: transport up (TCP)");
             finish_connection(
                 transport,
                 &args,
@@ -318,9 +251,9 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!(
                     "USB: starting AOAP handshake — plug the USB cable into the head unit"
                 );
-                flight_log("main: about to call UsbTransport::connect()");
+                tracing::info!(target: "flight", "main: about to call UsbTransport::connect()");
                 let transport = UsbTransport::connect().await?;
-                flight_log("main: UsbTransport::connect() returned (gadget on the bus)");
+                tracing::info!(target: "flight", "main: UsbTransport::connect() returned (gadget on the bus)");
                 finish_connection(
                     transport,
                     &args,
@@ -334,7 +267,7 @@ async fn main() -> anyhow::Result<()> {
                     advertised,
                 )
                 .await?;
-                flight_log("main: Connection::run() returned");
+                tracing::info!(target: "flight", "main: Connection::run() returned");
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -356,9 +289,9 @@ async fn main() -> anyhow::Result<()> {
             #[cfg(target_os = "linux")]
             {
                 tracing::info!("BT: starting AAW bootstrap (pair from the car if first run)");
-                flight_log("main: BtTransport::connect (auto-discover paired AAW peer)");
+                tracing::info!(target: "flight", "main: BtTransport::connect (auto-discover paired AAW peer)");
                 let transport = BtTransport::connect(BtConfig::default()).await?;
-                flight_log("main: BtTransport::connect returned (joined HU WiFi)");
+                tracing::info!(target: "flight", "main: BtTransport::connect returned (joined HU WiFi)");
                 finish_connection(
                     transport,
                     &args,
@@ -372,7 +305,7 @@ async fn main() -> anyhow::Result<()> {
                     advertised,
                 )
                 .await?;
-                flight_log("main: Connection::run() returned");
+                tracing::info!(target: "flight", "main: Connection::run() returned");
             }
             #[cfg(not(target_os = "linux"))]
             {
@@ -418,7 +351,7 @@ where
     // requested. A Flutter init failure propagates — no silent fallback —
     // so a broken engine deployment fails loud instead of pretending to
     // work with a test pattern.
-    flight_log("main: about to start producers");
+    tracing::info!(target: "flight", "main: about to start producers");
     let pointer_sink: Arc<dyn PointerSink> = if args.testkit {
         start_testkit_producers(
             frame_tx,
@@ -433,7 +366,7 @@ where
         // The Flutter embedder doubles as the pointer sink (touches drive its UI).
         start_flutter_producers(frame_tx, video_start_rx)?
     };
-    flight_log("main: producers up");
+    tracing::info!(target: "flight", "main: producers up");
 
     let mut registry = ServiceRegistry::new();
     registry.register(VideoService::new(advertised.clone()));
@@ -534,12 +467,10 @@ fn start_flutter_producers(
     // pre-main() and the host has already seen our USB device (USB mode)
     // / been connected to (TCP mode).
     let engine_lib_path = resolve_engine_lib();
-    flight_log(&format!(
-        "main: loading libflutter_engine from {}",
-        engine_lib_path.display()
-    ));
+    tracing::info!(target: "flight", "main: loading libflutter_engine from {}",
+        engine_lib_path.display());
     let lib = unsafe { FlutterLib::load(&engine_lib_path) }?;
-    flight_log("main: libflutter_engine loaded");
+    tracing::info!(target: "flight", "main: libflutter_engine loaded");
 
     // Launch the engine. Window-metrics/encoder sizing happens later in the
     // producer once the head unit's AVChannelSetupResponse arrives via the

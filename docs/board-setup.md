@@ -152,8 +152,9 @@ power-cycle):
 
 1. `python3 scripts/deploy.py --skip-build` — re-apply ansible + restart (or `python3 scripts/deploy.py` to rebuild first).
 2. `python3 scripts/debug_usb_gadget.py` — trigger car-mode boot,
-   wait ~60 s for the auto-revert, then print this iteration's
-   `/var/log.hdd/smartcar-boot.log` section to the terminal.
+   wait ~60 s for the auto-revert, then print the car-mode boot's
+   `journalctl -u smartcar-server -b -1` to the terminal (the `flight`-target
+   checkpoints stand out and read as a clean handshake timeline).
 
 If you accidentally leave the jumper *on* and use the override anyway,
 the override fires for the boot it triggers (and auto-reverts), but the
@@ -290,8 +291,13 @@ for a custom GATT advertisement. Board scripts default to `--bridge none`.
       hand to `Connection` (unchanged from the openauto/USB paths).
 
 The whole bootstrap takes ~5–15 s on a paired car within range. Flight-log
-checkpoints (`/var/log.hdd/smartcar-boot.log`) mirror the USB-mode breadcrumbs
-so post-mortem diffing across a failed AAW vs. successful USB boot is easy.
+checkpoints (tracing `target=flight`, written to the systemd journal) mirror
+the USB-mode breadcrumbs so post-mortem diffing across a failed AAW vs.
+successful USB boot is easy:
+
+```bash
+ssh root@$BOARD_HOST 'journalctl -u smartcar-server -b -1 | grep flight'
+```
 
 ### Files on the board
 

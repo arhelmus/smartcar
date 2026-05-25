@@ -24,60 +24,14 @@ use tracing::{debug, info, warn};
 
 use super::descriptors;
 
-// ── Logging helpers ──────────────────────────────────────────────────────────
-//
 // configfs writes are the most common silent-failure source in this module.
 // Every `os error 22 (Invalid argument)` you've ever stared at started life as
 // a single fs::write whose error message dropped the path. `write_attr` keeps
 // the path in the error, so the journal line tells you exactly which sysfs
 // node the kernel rejected.
 //
-// `flush_logs` forces the stdout BufWriter that tracing-subscriber writes into
-// out to the journald pipe. The car kills Vbus the instant it dislikes our
-// USB descriptor; without explicit flushes, the lines describing what we just
-// tried to advertise sit in userspace memory and vanish with the process.
-// We call it at the *risky moments* — right after each step that could be the
-// last one the board ever executes.
-fn flush_logs() {
-    use std::io::Write;
-    // stdout is the tracing-subscriber default writer (block-buffered when
-    // piped to journald). stderr is unbuffered already; flushing it is a
-    // no-op but harmless.
-    let _ = std::io::stdout().lock().flush();
-}
-
-/// Flight-recorder checkpoint that bypasses tracing/journald entirely.
-///
-/// Mirrors `smartcar-server`'s `flight_log` so the gadget bring-up phase
-/// can be traced through a Vbus cut. Writes are append+`fsync` to a
-/// persistent disk path; on the board `/var/log` is zram (volatile) and
-/// the real disk is `/var/log.hdd`, so we try the latter first.
-///
-/// Best-effort: errors are swallowed (this is a diagnostic side-channel).
-fn flight_log(step: &str) {
-    use std::io::Write as _;
-    let pid = std::process::id();
-    let ppid = unsafe { libc::getppid() };
-    let elapsed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0);
-    for path in [
-        "/var/log.hdd/smartcar-boot.log",
-        "/var/log/smartcar-boot.log",
-    ] {
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-        {
-            let _ = writeln!(f, "{elapsed:.3}  pid={pid} ppid={ppid}  usb: {step}");
-            let _ = f.sync_all();
-            return;
-        }
-    }
-}
-
+// USB bring-up checkpoints use `tracing::info!(target: "flight", …)` — see the
+// `flight` target docs in smartcar-server/src/main.rs.
 fn write_attr(path: impl AsRef<Path>, value: &str) -> io::Result<()> {
     let path = path.as_ref();
     debug!(path = %path.display(), value = %value.trim_end(), "configfs write");
@@ -185,12 +139,12 @@ impl Drop for GadgetHandle {
 ///
 /// **Blocking**: must be called from a blocking thread (e.g. `spawn_blocking`).
 pub fn run_handshake() -> io::Result<(GadgetHandle, fs::File, fs::File)> {
-    flight_log("run_handshake: entered");
+    tracing::info!(target: "flight", "run_handshake: entered");
 
     // ── Phase 1: initial MTP-like persona for AOAP mode-switch ────────────
     info!("USB: phase 1 — setting up initial gadget ({GADGET_INIT}) as Pixel MTP (0x18d1:0x4ee1)");
     setup_gadget(GADGET_INIT, 0x18d1, 0x4ee1, FFS_MOUNT_INIT)?;
-    flight_log("run_handshake: phase 1 setup_gadget done");
+    tracing::info!(target: "flight", "run_handshake: phase 1 setup_gadget done");
     let init_guard = GadgetHandle {
         gadget_name: GADGET_INIT.to_owned(),
         ffs_mount: FFS_MOUNT_INIT.to_owned(),
@@ -201,11 +155,11 @@ pub fn run_handshake() -> io::Result<(GadgetHandle, fs::File, fs::File)> {
         FFS_MOUNT_INIT,
         &descriptors::initial_descriptors(),
     )?;
-    flight_log("run_handshake: phase 1 write_and_enable_initial done (UDC bound as MTP)");
+    tracing::info!(target: "flight", "run_handshake: phase 1 write_and_enable_initial done (UDC bound as MTP)");
 
     info!("USB: phase 1 — waiting for AOAP vendor requests 51/52/53 from HU");
     wait_for_aoap(&mut ep0_init)?;
-    flight_log("run_handshake: phase 1 wait_for_aoap returned (Start-Accessory received)");
+    tracing::info!(target: "flight", "run_handshake: phase 1 wait_for_aoap returned (Start-Accessory received)");
 
     // Tear down Phase 1 explicitly. Drop order: ep0 + idle bulk/intr
     // file handles first (closes those fds — kernel requires this before
@@ -218,12 +172,12 @@ pub fn run_handshake() -> io::Result<(GadgetHandle, fs::File, fs::File)> {
     drop(ep2_idle);
     drop(ep3_idle);
     drop(init_guard);
-    flight_log("run_handshake: phase 1 teardown complete (UDC unbound, configfs cleared)");
+    tracing::info!(target: "flight", "run_handshake: phase 1 teardown complete (UDC unbound, configfs cleared)");
 
     // ── Phase 2: accessory persona — EP1 IN + EP2 OUT ─────────────────────
     info!("USB: phase 2 — setting up accessory gadget ({GADGET_ACC}) as 0x18d1:0x2d00");
     setup_gadget(GADGET_ACC, 0x18d1, 0x2d00, FFS_MOUNT_ACC)?;
-    flight_log("run_handshake: phase 2 setup_gadget done");
+    tracing::info!(target: "flight", "run_handshake: phase 2 setup_gadget done");
     let acc_guard = GadgetHandle {
         gadget_name: GADGET_ACC.to_owned(),
         ffs_mount: FFS_MOUNT_ACC.to_owned(),
@@ -241,18 +195,17 @@ pub fn run_handshake() -> io::Result<(GadgetHandle, fs::File, fs::File)> {
         FFS_MOUNT_ACC,
         &descriptors::accessory_descriptors(),
     )?;
-    flight_log("run_handshake: phase 2 write_and_enable done (ep0/ep1/ep2 open, UDC bound)");
+    tracing::info!(target: "flight", "run_handshake: phase 2 write_and_enable done (ep0/ep1/ep2 open, UDC bound)");
 
     info!("USB: phase 2 — waiting for host to enumerate accessory gadget");
     wait_for_enable(&mut ep0_acc)?;
-    flight_log("run_handshake: phase 2 wait_for_enable returned (FUNCTIONFS_ENABLE received)");
+    tracing::info!(target: "flight", "run_handshake: phase 2 wait_for_enable returned (FUNCTIONFS_ENABLE received)");
     drop(ep0_acc);
 
     // Last sync point before handing the bulk endpoints back to the async
     // transport. Anything that happens after this is governed by the bulk
     // flow's own per-frame logs.
-    flush_logs();
-    flight_log("run_handshake: ep0 dropped, returning Ok with ep1/ep2");
+    tracing::info!(target: "flight", "run_handshake: ep0 dropped, returning Ok with ep1/ep2");
     Ok((acc_guard, ep1, ep2))
 }
 
@@ -271,23 +224,23 @@ fn setup_gadget(name: &str, vid: u16, pid: u16, ffs_mount: &str) -> io::Result<(
         "USB: configuring gadget"
     );
     let g = format!("{CONFIGFS_ROOT}/{name}");
-    flight_log("setup_gadget: entered");
+    tracing::info!(target: "flight", "setup_gadget: entered");
 
     // Gadget root and device-level attributes.
     mkdir(&g)?;
-    flight_log("setup_gadget: gadget root mkdir done");
+    tracing::info!(target: "flight", "setup_gadget: gadget root mkdir done");
     write_attr(format!("{g}/idVendor"), &format!("0x{vid:04x}\n"))?;
     write_attr(format!("{g}/idProduct"), &format!("0x{pid:04x}\n"))?;
     write_attr(format!("{g}/bcdUSB"), "0x0200\n")?;
     write_attr(format!("{g}/bcdDevice"), "0x0100\n")?;
-    flight_log("setup_gadget: device-level attrs (VID/PID/bcd*) written");
+    tracing::info!(target: "flight", "setup_gadget: device-level attrs (VID/PID/bcd*) written");
 
     // Language strings.
     mkdir(format!("{g}/strings/0x409"))?;
     write_attr(format!("{g}/strings/0x409/manufacturer"), MANUFACTURER)?;
     write_attr(format!("{g}/strings/0x409/product"), PRODUCT)?;
     write_attr(format!("{g}/strings/0x409/serialnumber"), SERIAL)?;
-    flight_log("setup_gadget: lang strings 0x409 written");
+    tracing::info!(target: "flight", "setup_gadget: lang strings 0x409 written");
 
     // Configuration.
     mkdir(format!("{g}/configs/c.1/strings/0x409"))?;
@@ -296,13 +249,13 @@ fn setup_gadget(name: &str, vid: u16, pid: u16, ffs_mount: &str) -> io::Result<(
         "Config\n",
     )?;
     write_attr(format!("{g}/configs/c.1/MaxPower"), "500\n")?;
-    flight_log("setup_gadget: config c.1 written");
+    tracing::info!(target: "flight", "setup_gadget: config c.1 written");
 
     // FunctionFS function (must exist before mount).
     mkdir(format!("{g}/functions/ffs.{name}"))?;
-    flight_log("setup_gadget: ffs function dir created");
+    tracing::info!(target: "flight", "setup_gadget: ffs function dir created");
 
-    flight_log("setup_gadget: configfs hierarchy written");
+    tracing::info!(target: "flight", "setup_gadget: configfs hierarchy written");
 
     // Mount FunctionFS — this creates ep0 in the mount directory.
     mkdir(ffs_mount)?;
@@ -316,18 +269,16 @@ fn setup_gadget(name: &str, vid: u16, pid: u16, ffs_mount: &str) -> io::Result<(
         .output()?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        flight_log(&format!(
-            "setup_gadget: mount -t functionfs FAILED status={} stderr={}",
+        tracing::info!(target: "flight", "setup_gadget: mount -t functionfs FAILED status={} stderr={}",
             output.status,
-            stderr.trim()
-        ));
+            stderr.trim());
         return Err(io::Error::other(format!(
             "mount -t functionfs {name} -> {ffs_mount} failed ({}): {}",
             output.status,
             stderr.trim()
         )));
     }
-    flight_log("setup_gadget: FunctionFS mounted");
+    tracing::info!(target: "flight", "setup_gadget: FunctionFS mounted");
     debug!("FunctionFS mounted at {ffs_mount}");
     Ok(())
 }
@@ -353,15 +304,15 @@ fn write_and_enable(
     ffs_mount: &str,
     descs: &[u8],
 ) -> io::Result<(fs::File, fs::File, fs::File)> {
-    flight_log("write_and_enable: entered");
+    tracing::info!(target: "flight", "write_and_enable: entered");
     let ep0_path = format!("{ffs_mount}/ep0");
     debug!(path = %ep0_path, "opening ep0");
     let mut ep0 = fs::File::options().read(true).write(true).open(&ep0_path)?;
-    flight_log("write_and_enable: ep0 opened");
+    tracing::info!(target: "flight", "write_and_enable: ep0 opened");
 
     // Write descriptor blob then strings blob — two separate write(2) calls.
     ep0.write_all(descs).map_err(|e| {
-        flight_log(&format!("write_and_enable: ep0 descs write FAILED: {e}"));
+        tracing::info!(target: "flight", "write_and_enable: ep0 descs write FAILED: {e}");
         io::Error::new(
             e.kind(),
             format!("ep0 write descriptors ({} bytes): {e}", descs.len()),
@@ -369,13 +320,13 @@ fn write_and_enable(
     })?;
     let strs = descriptors::strings();
     ep0.write_all(&strs).map_err(|e| {
-        flight_log(&format!("write_and_enable: ep0 strings write FAILED: {e}"));
+        tracing::info!(target: "flight", "write_and_enable: ep0 strings write FAILED: {e}");
         io::Error::new(
             e.kind(),
             format!("ep0 write strings ({} bytes): {e}", strs.len()),
         )
     })?;
-    flight_log("write_and_enable: ep0 descriptors+strings written");
+    tracing::info!(target: "flight", "write_and_enable: ep0 descriptors+strings written");
     debug!(
         descs_bytes = descs.len(),
         strings_bytes = strs.len(),
@@ -390,24 +341,20 @@ fn write_and_enable(
         .write(true)
         .open(&ep1_path)
         .map_err(|e| {
-            flight_log(&format!(
-                "write_and_enable: open {ep1_path} (write) FAILED: {e}"
-            ));
+            tracing::info!(target: "flight", "write_and_enable: open {ep1_path} (write) FAILED: {e}");
             io::Error::new(e.kind(), format!("open {ep1_path} (write): {e}"))
         })?;
-    flight_log("write_and_enable: ep1 opened (pre-UDC-bind)");
+    tracing::info!(target: "flight", "write_and_enable: ep1 opened (pre-UDC-bind)");
 
     let ep2_path = format!("{ffs_mount}/ep2");
     let ep2 = fs::File::options()
         .read(true)
         .open(&ep2_path)
         .map_err(|e| {
-            flight_log(&format!(
-                "write_and_enable: open {ep2_path} (read) FAILED: {e}"
-            ));
+            tracing::info!(target: "flight", "write_and_enable: open {ep2_path} (read) FAILED: {e}");
             io::Error::new(e.kind(), format!("open {ep2_path} (read): {e}"))
         })?;
-    flight_log("write_and_enable: ep2 opened (pre-UDC-bind)");
+    tracing::info!(target: "flight", "write_and_enable: ep2 opened (pre-UDC-bind)");
 
     // Symlink function into config AFTER descriptors are written.
     let g = format!("{CONFIGFS_ROOT}/{gadget_name}");
@@ -424,11 +371,11 @@ fn write_and_enable(
     // an `EINVAL` if anything (VID/PID, descriptor layout, endpoint config)
     // doesn't pass its checks.
     let udc = find_udc()?;
-    flight_log(&format!("write_and_enable: found UDC {udc}, about to bind"));
+    tracing::info!(target: "flight", "write_and_enable: found UDC {udc}, about to bind");
     info!(gadget = gadget_name, udc = %udc, "USB: binding gadget to UDC");
     let udc_path = format!("{g}/UDC");
     fs::write(&udc_path, format!("{udc}\n")).map_err(|e| {
-        flight_log(&format!("write_and_enable: UDC bind FAILED: {e}"));
+        tracing::info!(target: "flight", "write_and_enable: UDC bind FAILED: {e}");
         io::Error::new(
             e.kind(),
             format!(
@@ -439,12 +386,11 @@ fn write_and_enable(
             ),
         )
     })?;
-    flight_log("write_and_enable: UDC bind WRITE returned Ok (host can now see us)");
+    tracing::info!(target: "flight", "write_and_enable: UDC bind WRITE returned Ok (host can now see us)");
     info!(gadget = gadget_name, udc = %udc, "USB gadget enabled");
     // CRITICAL: from this point on the host can see us and may yank Vbus at
     // any instant. Push every preceding log line out to journald NOW, while
     // we still have power.
-    flush_logs();
 
     Ok((ep0, ep1, ep2))
 }
@@ -467,16 +413,14 @@ fn write_and_enable_initial(
     ffs_mount: &str,
     descs: &[u8],
 ) -> io::Result<(fs::File, fs::File, fs::File, fs::File)> {
-    flight_log("write_and_enable_initial: entered");
+    tracing::info!(target: "flight", "write_and_enable_initial: entered");
     let ep0_path = format!("{ffs_mount}/ep0");
     debug!(path = %ep0_path, "opening ep0 (initial)");
     let mut ep0 = fs::File::options().read(true).write(true).open(&ep0_path)?;
-    flight_log("write_and_enable_initial: ep0 opened");
+    tracing::info!(target: "flight", "write_and_enable_initial: ep0 opened");
 
     ep0.write_all(descs).map_err(|e| {
-        flight_log(&format!(
-            "write_and_enable_initial: ep0 descs write FAILED: {e}"
-        ));
+        tracing::info!(target: "flight", "write_and_enable_initial: ep0 descs write FAILED: {e}");
         io::Error::new(
             e.kind(),
             format!(
@@ -487,15 +431,13 @@ fn write_and_enable_initial(
     })?;
     let strs = descriptors::strings();
     ep0.write_all(&strs).map_err(|e| {
-        flight_log(&format!(
-            "write_and_enable_initial: ep0 strings write FAILED: {e}"
-        ));
+        tracing::info!(target: "flight", "write_and_enable_initial: ep0 strings write FAILED: {e}");
         io::Error::new(
             e.kind(),
             format!("ep0 (initial) write strings ({} bytes): {e}", strs.len()),
         )
     })?;
-    flight_log("write_and_enable_initial: ep0 descriptors+strings written");
+    tracing::info!(target: "flight", "write_and_enable_initial: ep0 descriptors+strings written");
 
     // Open the three MTP-style data endpoints we declared. The kernel
     // requires every declared endpoint to be opened by userspace before
@@ -510,39 +452,33 @@ fn write_and_enable_initial(
         .write(true)
         .open(&ep1_path)
         .map_err(|e| {
-            flight_log(&format!(
-                "write_and_enable_initial: open {ep1_path} (idle bulk IN) FAILED: {e}"
-            ));
+            tracing::info!(target: "flight", "write_and_enable_initial: open {ep1_path} (idle bulk IN) FAILED: {e}");
             io::Error::new(e.kind(), format!("open {ep1_path} (idle bulk IN): {e}"))
         })?;
-    flight_log("write_and_enable_initial: ep1 (idle bulk IN) opened");
+    tracing::info!(target: "flight", "write_and_enable_initial: ep1 (idle bulk IN) opened");
 
     let ep2_path = format!("{ffs_mount}/ep2");
     let ep2_idle = fs::File::options()
         .read(true)
         .open(&ep2_path)
         .map_err(|e| {
-            flight_log(&format!(
-                "write_and_enable_initial: open {ep2_path} (idle bulk OUT) FAILED: {e}"
-            ));
+            tracing::info!(target: "flight", "write_and_enable_initial: open {ep2_path} (idle bulk OUT) FAILED: {e}");
             io::Error::new(e.kind(), format!("open {ep2_path} (idle bulk OUT): {e}"))
         })?;
-    flight_log("write_and_enable_initial: ep2 (idle bulk OUT) opened");
+    tracing::info!(target: "flight", "write_and_enable_initial: ep2 (idle bulk OUT) opened");
 
     let ep3_path = format!("{ffs_mount}/ep3");
     let ep3_idle = fs::File::options()
         .write(true)
         .open(&ep3_path)
         .map_err(|e| {
-            flight_log(&format!(
-                "write_and_enable_initial: open {ep3_path} (idle interrupt IN) FAILED: {e}"
-            ));
+            tracing::info!(target: "flight", "write_and_enable_initial: open {ep3_path} (idle interrupt IN) FAILED: {e}");
             io::Error::new(
                 e.kind(),
                 format!("open {ep3_path} (idle interrupt IN): {e}"),
             )
         })?;
-    flight_log("write_and_enable_initial: ep3 (idle interrupt IN) opened");
+    tracing::info!(target: "flight", "write_and_enable_initial: ep3 (idle interrupt IN) opened");
 
     let g = format!("{CONFIGFS_ROOT}/{gadget_name}");
     let src = format!("{g}/functions/ffs.{gadget_name}");
@@ -553,22 +489,18 @@ fn write_and_enable_initial(
     }
 
     let udc = find_udc()?;
-    flight_log(&format!(
-        "write_and_enable_initial: found UDC {udc}, about to bind"
-    ));
+    tracing::info!(target: "flight", "write_and_enable_initial: found UDC {udc}, about to bind");
     info!(gadget = gadget_name, udc = %udc, "USB: binding initial gadget to UDC");
     let udc_path = format!("{g}/UDC");
     fs::write(&udc_path, format!("{udc}\n")).map_err(|e| {
-        flight_log(&format!("write_and_enable_initial: UDC bind FAILED: {e}"));
+        tracing::info!(target: "flight", "write_and_enable_initial: UDC bind FAILED: {e}");
         io::Error::new(
             e.kind(),
             format!("UDC bind (initial) failed ({udc_path} <- '{udc}'): {e}"),
         )
     })?;
-    flight_log(
-        "write_and_enable_initial: UDC bind WRITE returned Ok (host can now see MTP-like persona)",
+    tracing::info!(target: "flight", "write_and_enable_initial: UDC bind WRITE returned Ok (host can now see MTP-like persona)",
     );
-    flush_logs();
 
     Ok((ep0, ep1_idle, ep2_idle, ep3_idle))
 }
@@ -595,51 +527,45 @@ fn wait_for_aoap(ep0: &mut fs::File) -> io::Result<()> {
 
         match event_type {
             FUNCTIONFS_BIND => {
-                flight_log("wait_for_aoap: ep0 BIND");
+                tracing::info!(target: "flight", "wait_for_aoap: ep0 BIND");
                 debug!("ep0: BIND");
             }
             FUNCTIONFS_ENABLE => {
-                flight_log("wait_for_aoap: ep0 ENABLE");
+                tracing::info!(target: "flight", "wait_for_aoap: ep0 ENABLE");
                 debug!("ep0: ENABLE");
             }
             FUNCTIONFS_SETUP => match b_request {
                 AOAP_GET_PROTOCOL => {
-                    flight_log("wait_for_aoap: AOAP 51 Get-Protocol, responding v2");
+                    tracing::info!(target: "flight", "wait_for_aoap: AOAP 51 Get-Protocol, responding v2");
                     debug!("AOAP req 51: Get-Protocol → v2");
                     ep0.write_all(&[0x02, 0x00]).map_err(|e| {
-                        flight_log(&format!(
-                            "wait_for_aoap: AOAP 51 response write FAILED: {e}"
-                        ));
+                        tracing::info!(target: "flight", "wait_for_aoap: AOAP 51 response write FAILED: {e}");
                         e
                     })?;
-                    flight_log("wait_for_aoap: AOAP 51 response sent");
+                    tracing::info!(target: "flight", "wait_for_aoap: AOAP 51 response sent");
                 }
                 AOAP_SEND_STRING => {
                     let idx = u16::from_le_bytes([event[4], event[5]]);
-                    flight_log(&format!(
-                        "wait_for_aoap: AOAP 52 Send-String idx={idx} (no reply)"
-                    ));
+                    tracing::info!(target: "flight", "wait_for_aoap: AOAP 52 Send-String idx={idx} (no reply)");
                     debug!("AOAP req 52: Send-String idx={idx} (no response needed)");
                     // OUT transfer — host sends string; no IN reply required.
                 }
                 AOAP_START_ACCESSORY => {
-                    flight_log("wait_for_aoap: AOAP 53 Start-Accessory, exiting Phase 1");
+                    tracing::info!(target: "flight", "wait_for_aoap: AOAP 53 Start-Accessory, exiting Phase 1");
                     debug!("AOAP req 53: Start-Accessory");
                     return Ok(());
                 }
                 other => {
-                    flight_log(&format!(
-                        "wait_for_aoap: unexpected SETUP bRequest={other} bRequestType={} wValue={} wIndex={} wLength={}",
+                    tracing::info!(target: "flight", "wait_for_aoap: unexpected SETUP bRequest={other} bRequestType={} wValue={} wIndex={} wLength={}",
                         event[0],
                         u16::from_le_bytes([event[2], event[3]]),
                         u16::from_le_bytes([event[4], event[5]]),
-                        u16::from_le_bytes([event[6], event[7]]),
-                    ));
+                        u16::from_le_bytes([event[6], event[7]]),);
                     debug!("ep0 SETUP: unknown bRequest={other}");
                 }
             },
             other => {
-                flight_log(&format!("wait_for_aoap: unknown event_type={other}"));
+                tracing::info!(target: "flight", "wait_for_aoap: unknown event_type={other}");
                 debug!("ep0: unknown event type={other}");
             }
         }
@@ -683,7 +609,6 @@ fn wait_for_enable(ep0: &mut fs::File) -> io::Result<()> {
                 events_seen = events,
                 "USB: still waiting for host enumeration (no ep0 event yet)"
             );
-            flush_logs();
             last_heartbeat = Instant::now();
             continue;
         }
@@ -694,27 +619,24 @@ fn wait_for_enable(ep0: &mut fs::File) -> io::Result<()> {
         let since_last = last_heartbeat.elapsed();
         match evt {
             FUNCTIONFS_ENABLE => {
-                flight_log("wait_for_enable: ENABLE received");
+                tracing::info!(target: "flight", "wait_for_enable: ENABLE received");
                 info!(
                     total_events = events,
                     elapsed_s = started.elapsed().as_secs(),
                     "USB: FUNCTIONFS_ENABLE received — host has enumerated us"
                 );
-                flush_logs();
                 return Ok(());
             }
             FUNCTIONFS_BIND => {
-                flight_log("wait_for_enable: acc ep0 BIND");
+                tracing::info!(target: "flight", "wait_for_enable: acc ep0 BIND");
                 debug!(elapsed_ms = since_last.as_millis(), "acc ep0: BIND");
             }
             FUNCTIONFS_SETUP => {
-                flight_log(&format!(
-                    "wait_for_enable: SETUP (pre-ENABLE) bRequest={} wValue={} wIndex={} wLength={}",
+                tracing::info!(target: "flight", "wait_for_enable: SETUP (pre-ENABLE) bRequest={} wValue={} wIndex={} wLength={}",
                     event[1],
                     u16::from_le_bytes([event[2], event[3]]),
                     u16::from_le_bytes([event[4], event[5]]),
-                    u16::from_le_bytes([event[6], event[7]]),
-                ));
+                    u16::from_le_bytes([event[6], event[7]]),);
                 debug!(
                     elapsed_ms = since_last.as_millis(),
                     bRequestType = event[0],
@@ -726,7 +648,7 @@ fn wait_for_enable(ep0: &mut fs::File) -> io::Result<()> {
                 );
             }
             other => {
-                flight_log(&format!("wait_for_enable: unknown event_type={other}"));
+                tracing::info!(target: "flight", "wait_for_enable: unknown event_type={other}");
                 debug!(
                     elapsed_ms = since_last.as_millis(),
                     evt = other,
@@ -756,7 +678,7 @@ fn find_udc() -> io::Result<String> {
 /// propagated — `cleanup` runs from `Drop` and we want best-effort teardown
 /// even if the kernel state is partially gone (e.g. after a crash).
 fn cleanup(gadget_name: &str, ffs_mount: &str) -> io::Result<()> {
-    flight_log(&format!("cleanup: begin gadget={gadget_name}"));
+    tracing::info!(target: "flight", "cleanup: begin gadget={gadget_name}");
     debug!(gadget = gadget_name, ffs_mount, "USB: cleanup begin");
     let g = format!("{CONFIGFS_ROOT}/{gadget_name}");
 
@@ -764,7 +686,7 @@ fn cleanup(gadget_name: &str, ffs_mount: &str) -> io::Result<()> {
     if let Err(e) = fs::write(format!("{g}/UDC"), "\n") {
         debug!(error = %e, "cleanup: unbind UDC failed (already unbound?)");
     }
-    flight_log(&format!("cleanup: UDC unbound gadget={gadget_name}"));
+    tracing::info!(target: "flight", "cleanup: UDC unbound gadget={gadget_name}");
 
     // Remove function symlink.
     let _ = fs::remove_file(format!("{g}/configs/c.1/ffs.{gadget_name}"));
@@ -790,7 +712,7 @@ fn cleanup(gadget_name: &str, ffs_mount: &str) -> io::Result<()> {
     let _ = fs::remove_dir(format!("{g}/strings/0x409"));
     let _ = fs::remove_dir(&g);
 
-    flight_log(&format!("cleanup: done gadget={gadget_name}"));
+    tracing::info!(target: "flight", "cleanup: done gadget={gadget_name}");
     debug!(gadget = gadget_name, "USB: cleanup done");
     Ok(())
 }

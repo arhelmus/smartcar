@@ -7,11 +7,11 @@ trigger before committing to car mode AND schedules a transient
 systemd-run timer to reboot 30 s later, which brings the board back to dev
 mode automatically.  This script:
 
-  1. assigns the laptop USB-Ethernet IP (so the board is reachable)
+  1. checks that the laptop USB-Ethernet IP is assigned (so the board is reachable)
   2. triggers the car-mode reboot
   3. polls SSH until the board returns in dev mode (after the auto-revert)
-  4. tails the new flight-log section so the iteration's checkpoints land
-     directly in the terminal
+  4. dumps the previous boot's smartcar-server journal so this iteration's
+     checkpoints (target=flight) land directly in the terminal
 
 No jumper, no power-cycle, no walk to the car.
 
@@ -78,15 +78,18 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_S,
                         metavar="SECONDS",
                         help=f"Max seconds to wait for the board to return (default: {DEFAULT_TIMEOUT_S}).")
-    parser.add_argument("--keep-log", action="store_true",
-                        help="Don't clear /var/log.hdd/smartcar-boot.log before triggering. "
-                             "Default is to clear it so this iteration's section is the only one.")
     args = parser.parse_args()
 
-    # 1. USB-Ethernet up so the board is reachable.
-    rc = common.assign_board_ip()
-    if rc != 0:
-        return rc
+    # 1. Preflight USB-Ethernet so the board is reachable. assign_board_ip
+    # needs sudo; deploy/debug scripts don't run it, the operator does once
+    # per session via `make assign`.
+    if not common.laptop_usb_ip():
+        print(
+            "ERROR: laptop USB-Ethernet interface has no IP — the board is not reachable.\n"
+            "       Run first:  make assign   (or `sudo python3 scripts/assign_board.py`)",
+            file=sys.stderr,
+        )
+        return 1
 
     # 2. Snapshot the current boot_id so we can detect the reboot.
     prev_boot_id = read_boot_id(args.board, args.user)
@@ -95,24 +98,11 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
-    # 3. Prep: clear log + drop trigger. Done in a *separate* SSH call from
-    # the reboot so the prep is guaranteed durable before reboot races us
-    # out. Both paths must be cleared:
-    #   /var/log.hdd/smartcar-boot.log — what smartcar-server writes via
-    #     flight_log (persistent eMMC, preferred).
-    #   /var/log/smartcar-boot.log     — the zram copy. armbian-ramlog
-    #     syncs /var/log ↔ /var/log.hdd at boot/shutdown, so a stale zram
-    #     copy will overwrite the .hdd file on the next shutdown and any
-    #     "rm .hdd only" clear is effectively a no-op across a reboot.
-    # `sync` after the rm forces the directory metadata change out to disk
-    # so the next boot's filesystem mount sees the .hdd file as absent.
-    prep_cmds = []
-    if not args.keep_log:
-        prep_cmds += [
-            "rm -f /var/log.hdd/smartcar-boot.log",
-            "rm -f /var/log/smartcar-boot.log",
-        ]
-    prep_cmds += [
+    # 3. Drop the one-shot car-mode trigger. Journal persistence + boot
+    # indexing handle per-iteration isolation — we read journalctl -b -1
+    # after the auto-revert, so we naturally see only this iteration's
+    # smartcar-server output without having to clear anything first.
+    prep_cmds = [
         "mkdir -p /var/lib/smartcar",
         "touch /var/lib/smartcar/car-mode-once",
         "sync",
@@ -149,17 +139,19 @@ def main() -> int:
     print(f"New boot detected after {elapsed}s — board is back in dev mode.",
           file=sys.stderr)
 
-    # 4. Dump the flight log so the iteration's evidence is right here in
-    # the terminal. The log is small (couple kB per attempt × few attempts);
-    # printing it inline is the right ergonomic.
-    print("\n=== /var/log.hdd/smartcar-boot.log ===\n", file=sys.stderr)
+    # 4. Dump the previous-boot smartcar-server journal so the iteration's
+    # evidence is right here in the terminal. -b -1 = the boot just before
+    # the auto-revert (the car-mode attempt). The flight-target checkpoints
+    # (tracing target=flight, emitted at info) read as a clean timeline.
+    print("\n=== journalctl -u smartcar-server -b -1 (car-mode attempt) ===\n",
+          file=sys.stderr)
     try:
         r = ssh(args.board, args.user,
-                "cat /var/log.hdd/smartcar-boot.log 2>/dev/null", check=True)
+                "journalctl -u smartcar-server -b -1 --no-pager", check=True)
         sys.stdout.write(r.stdout)
         sys.stdout.flush()
     except subprocess.CalledProcessError as e:
-        print(f"WARN: could not read flight log: {e.stderr}", file=sys.stderr)
+        print(f"WARN: could not read previous-boot journal: {e.stderr}", file=sys.stderr)
 
     return 0
 
