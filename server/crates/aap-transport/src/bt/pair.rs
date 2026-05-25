@@ -172,10 +172,7 @@ async fn find_aaw_device(adapter: &Adapter) -> Result<Option<Device>, BtError> {
 async fn probe_rfcomm_aawg(addr: bluer::Address) -> bool {
     use super::rfcomm::AAWG_DEFAULT_RFCOMM_CHANNEL;
     let sa = bluer::rfcomm::SocketAddr::new(addr, AAWG_DEFAULT_RFCOMM_CHANNEL);
-    let probe = tokio::time::timeout(
-        Duration::from_secs(2),
-        bluer::rfcomm::Stream::connect(sa),
-    );
+    let probe = tokio::time::timeout(Duration::from_secs(2), bluer::rfcomm::Stream::connect(sa));
     matches!(probe.await, Ok(Ok(_)))
 }
 
