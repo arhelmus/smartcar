@@ -10,7 +10,8 @@ production.
 - `server/flutter-ui/` — head-unit Flutter UI embedded in `smartcar-server` via `aap-flutter`.
 - `mobile/` — phone-side Flutter app (iOS + Android), talks to the board over the `aap-bridge` control channel.
 - `shell.nix` — hermetic Nix environment for building openauto natively on macOS.
-- `scripts/` — Python orchestration (`init.py`, `build_openauto.py`, `run_openauto.py`, `run_server.py`, `review.py`).
+- `scripts/` — Python orchestration (`init.py`, `build_openauto.py`, `run_openauto.py`, `run_server.py`, `deploy.py`, `assign_board.py`, `review.py`).
+- `board/` — Ansible playbook that provisions the Orange Pi Zero 2W; phase 2 of `scripts/deploy.py`.
 - `scripts/patches/openauto/` — local patches applied to the openauto submodule at build time.
 - `docs/protocol/` — Android Auto wire protocol documentation.
 
@@ -19,6 +20,25 @@ production.
 ```sh
 make init
 ```
+
+## Deploy
+
+One-shot pipeline to the board: cross-build (release) + rsync binary +
+ansible provision + systemd restart + healthcheck. Prereqs are a
+USB-Ethernet cable to the board and the laptop side already configured:
+
+```sh
+sudo python3 scripts/assign_board.py    # one-time, per session
+make deploy                              # full deploy
+make deploy -- --check                   # ansible --check --diff, no restart
+make deploy -- --skip-build              # use the binary already on the board
+python3 scripts/deploy.py --runtime-args "--log debug,aap_core=trace"
+                                          # one-shot ExecStart override
+                                          # (transient, evaporates on reboot)
+```
+
+The board must be in CAR mode (jumper or `car-mode-once`) for the
+restart to take effect — see `docs/board-setup.md`.
 
 ## Review
 
