@@ -15,9 +15,11 @@ use std::time::{Duration, Instant};
 
 use bluer::{
     agent::{Agent, AgentHandle},
+    rfcomm::{Profile, ProfileHandle, ReqError, Role},
     Adapter, Device, Session,
 };
-use futures::FutureExt;
+use futures::{FutureExt, StreamExt};
+use tokio::task::JoinHandle;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
@@ -28,12 +30,39 @@ use super::rfcomm::AAWG_PROFILE_UUID;
 /// we add LE advertising). Cars see this in their AA Wireless pair list.
 const ADVERTISED_NAME: &str = "smartcar";
 
-/// Power the default adapter, make it discoverable + pairable, and register
-/// a Just Works agent so an incoming pair request from the car is accepted
-/// without operator intervention. The returned `AgentHandle` keeps the
-/// agent alive — drop it after pairing is no longer needed (e.g. when
-/// `BtTransport::connect` returns and we've already found the bonded peer).
-pub async fn open_adapter() -> Result<(Session, Adapter, AgentHandle), BtError> {
+/// Bundle returned by [`open_adapter`]. Caller keeps it alive for as long as
+/// the board should be advertising / acceptive — drop all fields to
+/// unregister.
+pub struct AdapterBundle {
+    /// Kept alive so the BlueZ D-Bus connection stays open for the lifetime
+    /// of the bundle. Dropping the Session closes everything else with it.
+    pub _session: Session,
+    pub adapter: Adapter,
+    /// Just Works pairing agent. Keeps incoming pair requests auto-accepted
+    /// for as long as it's alive.
+    pub _agent: AgentHandle,
+    /// Background task that drains the AAWG `Profile`'s inbound RFCOMM
+    /// queue (rejecting each, since real AAW flows are phone-as-client).
+    /// Aborted on drop, which closes the registered profile.
+    pub _aawg_drainer: JoinHandle<()>,
+}
+
+/// Power the default adapter, make it discoverable + pairable, register a
+/// Just Works agent, and register the AAWG `Profile` so cars filtering
+/// their pair list by SDP UUID actually see us.
+///
+/// Why the AAWG profile: cars (BMW iDrive, Audi MMI, etc.) commonly do an
+/// SDP search during their "Add Android Auto phone" scan and skip any
+/// device that doesn't list `4de17a00-…`. The on-disk evidence was the
+/// board's `bluetoothctl show` UUID list containing GATT/GAP/SIM Access/
+/// PnP/AVRCP/DeviceInfo but no AAWG — iPhones (which list every device)
+/// saw the board, cars (which filter) did not.
+///
+/// The real AAW flow is phone-as-RFCOMM-client (we connect outward to the
+/// HU's channel 8 — see `BtTransport::connect`), so we never expect a
+/// useful inbound connection on this Profile. A background drainer task
+/// rejects each request to keep BlueZ's queue empty.
+pub async fn open_adapter() -> Result<AdapterBundle, BtError> {
     let session = Session::new().await?;
     let adapter = session.default_adapter().await?;
 
@@ -74,12 +103,59 @@ pub async fn open_adapter() -> Result<(Session, Adapter, AgentHandle), BtError> 
         .await
         .map_err(|e| BtError::Agent(e.to_string()))?;
 
+    // AAWG profile — strictly an SDP advertisement here. BlueZ will list
+    // the AAWG UUID in our service record so cars filtering on it find us.
+    //
+    // `channel: None` lets BlueZ pick any free RFCOMM channel. We
+    // originally requested channel 8 to mirror aa-proxy-rs (HU side), but
+    // BlueZ's default profile manager already binds channel 8 for SIM
+    // Access / OBEX / etc. on this image (`rfcomm_bind: Address already
+    // in use`), and our local channel is *transparent* to the car anyway
+    // — the car's SDP query reads whatever channel BlueZ assigned us, and
+    // (more importantly) the real AAW data flow has us as RFCOMM *client*
+    // outbound to the HU's channel 8, not the other direction.
+    let profile = Profile {
+        uuid: AAWG_PROFILE_UUID,
+        name: Some("AA Wireless".into()),
+        role: Some(Role::Server),
+        require_authentication: Some(false),
+        require_authorization: Some(false),
+        ..Default::default()
+    };
+    let mut profile_handle: ProfileHandle = session
+        .register_profile(profile)
+        .await
+        .map_err(|e| BtError::Agent(format!("register_profile(AAWG): {e}")))?;
+
+    // Background drainer. Some HUs may try inbound RFCOMM (reverse role)
+    // even though the canonical flow is phone-as-client; we reject them
+    // and rely on our outbound `Framed::connect` in BtTransport::connect.
+    // If a particular HU only works with inbound, the journal line below
+    // will surface it and we'll switch to using the inbound stream.
+    let aawg_drainer = tokio::spawn(async move {
+        while let Some(req) = profile_handle.next().await {
+            warn!(
+                addr = %req.device(),
+                "bt: inbound RFCOMM on AAWG channel — rejecting (phone-as-client \
+                 flow expected); if your HU needs reverse role, this is the \
+                 breadcrumb to act on"
+            );
+            req.reject(ReqError::Rejected);
+        }
+    });
+
     info!(
         addr = %adapter.address().await?,
         alias = %adapter.alias().await?,
-        "bt: adapter ready, discoverable + Just Works agent registered"
+        aawg = %AAWG_PROFILE_UUID,
+        "bt: adapter ready, discoverable + Just Works agent + AAWG profile registered"
     );
-    Ok((session, adapter, agent_handle))
+    Ok(AdapterBundle {
+        _session: session,
+        adapter,
+        _agent: agent_handle,
+        _aawg_drainer: aawg_drainer,
+    })
 }
 
 /// Wait for an AAW-capable paired device to appear on the adapter.

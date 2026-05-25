@@ -280,8 +280,11 @@ def _check_bt_advertisement(board: str, user: str) -> int:
     # it likely crashed inside bluer before reaching that point.
     agent_check = _ssh(
         board, user,
+        # Matches both the previous (`Just Works agent registered`) and the
+        # current (`Just Works agent + AAWG profile registered`) breadcrumbs
+        # — useful while rolling out the AAWG profile change.
         "journalctl -u smartcar-server.service --since '60 seconds ago' --no-pager "
-        "| grep -F 'Just Works agent registered' >/dev/null",
+        "| grep -E 'Just Works agent.* registered' >/dev/null",
         capture=True,
     )
     if agent_check.returncode != 0:

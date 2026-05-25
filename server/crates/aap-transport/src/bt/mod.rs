@@ -94,19 +94,20 @@ impl BtTransport {
     pub async fn connect(cfg: BtConfig) -> Result<TcpTransport, BtError> {
         info!("bt: starting AAW bootstrap");
 
-        // 1. BlueZ adapter: discoverable + Just Works agent registered.
-        // The `_agent` handle keeps the agent alive while we're polling for
-        // a paired peer; it drops at end of this function once we already
-        // have a bond, which is when BlueZ no longer needs us listening
-        // for pair requests.
-        let (_session, adapter, _agent) = pair::open_adapter().await?;
+        // 1. BlueZ adapter: alias=smartcar, discoverable, Just Works agent
+        // registered, AAWG profile in SDP. The whole bundle stays alive for
+        // the lifetime of `connect`; dropping it at the end unregisters the
+        // agent + AAWG profile, which is fine because by then we have a
+        // bond and BlueZ no longer needs us listening for pair requests.
+        let bundle = pair::open_adapter().await?;
+        let adapter = &bundle.adapter;
 
         // 2. Wait for a paired AAW peer to appear. On first boot the
         // operator opens AA Wireless on the car and selects `smartcar`;
         // BlueZ accepts Just Works via the agent above, the bond is
         // cached, and this function returns. On subsequent boots the bond
         // is already there and this returns immediately.
-        let device = pair::wait_for_aaw_device(&adapter, cfg.pair_wait_timeout).await?;
+        let device = pair::wait_for_aaw_device(adapter, cfg.pair_wait_timeout).await?;
         let car_addr = device.address();
         pair::warm_connect(&device, cfg.bt_connect_timeout).await;
 
