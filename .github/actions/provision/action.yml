@@ -1,4 +1,4 @@
-name: Setup smartcar init prereqs
+name: Provision smartcar CI runner
 description: |
   Installs the tools `scripts/init.py` hard-requires so `make init` succeeds
   in CI. The checks went from warn-and-continue to fatal in scripts/init.py
