@@ -355,9 +355,7 @@ async fn main() -> anyhow::Result<()> {
         TransportChoice::Bt => {
             #[cfg(target_os = "linux")]
             {
-                tracing::info!(
-                    "BT: starting AAW bootstrap (pair from the car if first run)"
-                );
+                tracing::info!("BT: starting AAW bootstrap (pair from the car if first run)");
                 flight_log("main: BtTransport::connect (auto-discover paired AAW peer)");
                 let transport = BtTransport::connect(BtConfig::default()).await?;
                 flight_log("main: BtTransport::connect returned (joined HU WiFi)");
@@ -386,9 +384,7 @@ async fn main() -> anyhow::Result<()> {
                 let _ = speech_mixer;
                 let _ = system_mixer;
                 let _ = advertised;
-                anyhow::bail!(
-                    "--transport bt is only supported on Linux (BlueZ-only)"
-                );
+                anyhow::bail!("--transport bt is only supported on Linux (BlueZ-only)");
             }
         }
     }

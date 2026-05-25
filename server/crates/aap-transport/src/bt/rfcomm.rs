@@ -64,11 +64,10 @@ impl Framed {
     ) -> Result<Self, BtError> {
         let sa = SocketAddr::new(addr, channel);
         debug!(?sa, ?connect_timeout, "rfcomm: connecting");
-        let stream =
-            tokio::time::timeout(connect_timeout, Stream::connect(sa))
-                .await
-                .map_err(|_| BtError::ConnectTimeout)?
-                .map_err(BtError::Io)?;
+        let stream = tokio::time::timeout(connect_timeout, Stream::connect(sa))
+            .await
+            .map_err(|_| BtError::ConnectTimeout)?
+            .map_err(BtError::Io)?;
         Ok(Self {
             stream,
             read_buf: BytesMut::with_capacity(1024),
@@ -76,11 +75,7 @@ impl Framed {
     }
 
     /// Send one framed AAW message.
-    pub async fn send<M: ProstMessage>(
-        &mut self,
-        id: MessageId,
-        msg: &M,
-    ) -> Result<(), BtError> {
+    pub async fn send<M: ProstMessage>(&mut self, id: MessageId, msg: &M) -> Result<(), BtError> {
         let mut body = Vec::with_capacity(msg.encoded_len());
         msg.encode(&mut body).map_err(BtError::Encode)?;
         if body.len() > u16::MAX as usize {

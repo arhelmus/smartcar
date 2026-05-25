@@ -129,8 +129,7 @@ impl BtTransport {
 
         // 5. Bring up wlan0 STA, join HU's AP, wait for DHCP.
         let _our_ip =
-            wpa::join_hu_network(&outcome.creds, cfg.wifi_join_timeout, cfg.dhcp_timeout)
-                .await?;
+            wpa::join_hu_network(&outcome.creds, cfg.wifi_join_timeout, cfg.dhcp_timeout).await?;
 
         // 6. TCP connect outward to the HU's AA listener.
         info!(target = %outcome.hu_tcp_target, "bt: TCP connecting to HU");

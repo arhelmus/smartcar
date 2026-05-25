@@ -24,12 +24,12 @@
 - name: Stat /etc/bluetooth/main.conf
   ansible.builtin.stat:
     path: /etc/bluetooth/main.conf
-  register: bluez_main_conf
+  register: bluetooth_main_conf
 
 - name: Stat /etc/bluetooth/main.conf.dist (one-shot backup)
   ansible.builtin.stat:
     path: /etc/bluetooth/main.conf.dist
-  register: bluez_main_conf_dist
+  register: bluetooth_main_conf_dist
 
 - name: Back up stock /etc/bluetooth/main.conf to .dist (first run only)
   ansible.builtin.copy:
@@ -40,8 +40,8 @@
     group: root
     mode: "0644"
   when:
-    - bluez_main_conf.stat.exists
-    - not bluez_main_conf_dist.stat.exists
+    - bluetooth_main_conf.stat.exists
+    - not bluetooth_main_conf_dist.stat.exists
 
 - name: Deploy smartcar-tuned /etc/bluetooth/main.conf
   ansible.builtin.template:
@@ -55,11 +55,11 @@
 # rfkill state generally survives reboot on Debian, but we unblock here so
 # a fresh image (or a kernel that came up blocked) doesn't silently kill the
 # AAW path. `command` not `shell`; idempotent — rfkill returns 0 either way.
-- name: rfkill unblock bluetooth
+- name: Rfkill unblock bluetooth
   ansible.builtin.command: rfkill unblock bluetooth
   changed_when: false
 
-- name: rfkill unblock wifi
+- name: Rfkill unblock wifi
   ansible.builtin.command: rfkill unblock wifi
   changed_when: false
 

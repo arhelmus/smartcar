@@ -71,9 +71,7 @@ fn main() {
     let mut config = prost_build::Config::new();
 
     if let Err(err) = config.compile_protos(&proto_files, &[aasdk_pb_root]) {
-        println!(
-            "cargo:warning=aap-transport: prost-build failed ({err}); AAW disabled"
-        );
+        println!("cargo:warning=aap-transport: prost-build failed ({err}); AAW disabled");
         println!("cargo:rustc-cfg=aap_transport_no_aaw");
     }
 }

@@ -55,9 +55,12 @@ pub async fn join_hu_network(
     // Stop any wpa_supplicant currently bound to wlan0 (systemd unit, manual
     // run from a previous AAW attempt, etc.). We don't care if it wasn't
     // running.
-    run("systemctl", &["stop", &format!("wpa_supplicant@{WLAN_IF}.service")])
-        .await
-        .ok();
+    run(
+        "systemctl",
+        &["stop", &format!("wpa_supplicant@{WLAN_IF}.service")],
+    )
+    .await
+    .ok();
     run("pkill", &["-f", &format!("wpa_supplicant.*-i ?{WLAN_IF}")])
         .await
         .ok();
@@ -162,7 +165,9 @@ async fn wait_for_ip(timeout: Duration) -> Result<Ipv4Addr, BtError> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         let out = Command::new("ip")
-            .args(["-4", "-o", "addr", "show", "dev", WLAN_IF, "scope", "global"])
+            .args([
+                "-4", "-o", "addr", "show", "dev", WLAN_IF, "scope", "global",
+            ])
             .output()
             .await
             .map_err(|e| BtError::Wpa(format!("ip addr: {e}")))?;
@@ -219,10 +224,7 @@ mod tests {
     #[test]
     fn parses_ip_from_one_line() {
         let s = "2: wlan0    inet 192.168.43.245/24 brd 192.168.43.255 scope global dynamic wlan0";
-        assert_eq!(
-            parse_first_inet(s),
-            Some(Ipv4Addr::new(192, 168, 43, 245))
-        );
+        assert_eq!(parse_first_inet(s), Some(Ipv4Addr::new(192, 168, 43, 245)));
     }
 
     #[test]

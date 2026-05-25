@@ -81,10 +81,7 @@ pub async fn open_adapter() -> Result<(Session, Adapter, AgentHandle), BtError> 
 /// Logs a one-shot "waiting" message and polls every 5 s. Bails after
 /// `timeout` with [`BtError::NoAawPairedDevice`] so the systemd unit
 /// restarts and tries again rather than spinning forever.
-pub async fn wait_for_aaw_device(
-    adapter: &Adapter,
-    timeout: Duration,
-) -> Result<Device, BtError> {
+pub async fn wait_for_aaw_device(adapter: &Adapter, timeout: Duration) -> Result<Device, BtError> {
     let deadline = Instant::now() + timeout;
     let mut announced_wait = false;
     loop {
