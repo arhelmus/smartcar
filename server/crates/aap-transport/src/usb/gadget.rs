@@ -96,11 +96,12 @@ fn mkdir(path: impl AsRef<Path>) -> io::Result<()> {
 
 const CONFIGFS_ROOT: &str = "/sys/kernel/config/usb_gadget";
 
-#[allow(dead_code)] // Phase-1 (two-persona AOAP) gadget name; see `run_handshake` doc.
+// Phase-1 (initial / "MTP-like") gadget — used so the HU sees a
+// recognisable phone first and drives the AOAP mode-switch handshake
+// (vendor requests 51/52/53 on ep0).
 const GADGET_INIT: &str = "aap-init";
 const GADGET_ACC: &str = "aap";
 
-#[allow(dead_code)] // Phase-1 (two-persona AOAP) FunctionFS mount; see `run_handshake` doc.
 const FFS_MOUNT_INIT: &str = "/dev/ffs-aap-init";
 const FFS_MOUNT_ACC: &str = "/dev/ffs-aap";
 
@@ -125,14 +126,9 @@ const FUNCTIONFS_SETUP: u8 = 4;
 
 // ── AOAP control-transfer request codes ──────────────────────────────────────
 
-// AOAP vendor request codes — only the two-persona flow (`wait_for_aoap`)
-// consumes these.  The skip-handshake variant in `run_handshake` doesn't
-// touch them.
-#[allow(dead_code)]
+// AOAP vendor request codes consumed by `wait_for_aoap` during Phase 1.
 const AOAP_GET_PROTOCOL: u8 = 51;
-#[allow(dead_code)]
 const AOAP_SEND_STRING: u8 = 52;
-#[allow(dead_code)]
 const AOAP_START_ACCESSORY: u8 = 53;
 
 // ── GadgetHandle ─────────────────────────────────────────────────────────────
@@ -156,19 +152,31 @@ impl Drop for GadgetHandle {
 
 /// Bring up the AOAP accessory gadget and return the open bulk endpoints.
 ///
-/// **Skip-handshake variant.** Production car HUs whitelist Google's
-/// VID (`0x18d1`) and reject the Huawei initial-gadget ID
-/// (`0x12d1:0x107e`) as "unsupported USB device" without ever probing
-/// for AOAP. We therefore skip the two-persona dance entirely and
-/// present `0x18d1:0x2d00` (Google AOAP accessory) directly; the HU
-/// recognizes the accessory persona on first sight, no mode-switch
-/// control transfers needed.
+/// **Two-persona variant.** Real Android phones expose themselves first as
+/// an ordinary device (MTP / file-transfer class on a Pixel) and only
+/// after the head unit drives the AOAP mode-switch handshake on ep0 do
+/// they disconnect and re-enumerate as the AOAP accessory persona. We
+/// mirror that.
 ///
-/// If you hit a HU that *requires* the mode-switch handshake, revert to
-/// the two-persona flow: re-add the `setup_gadget(GADGET_INIT,
-/// 0x18d1, 0x4ee1, …)` + `wait_for_aoap()` calls — both still live in
-/// this module (marked `#[allow(dead_code)]`) — and drop the initial
-/// gadget before this Phase-2 block.
+/// 1. **Phase 1** — bring up `aap-init` as `0x18d1:0x4ee1` (Pixel MTP),
+///    ep0-only via FunctionFS with `FUNCTIONFS_ALL_CTRL_RECIP` so the
+///    device-directed AOAP vendor requests reach userspace. Drive
+///    `wait_for_aoap` until the HU sends `AOAP_START_ACCESSORY` (req 53)
+///    and the bus is reset.
+/// 2. **Phase 2** — tear down `aap-init` (Drop on the guard unbinds UDC,
+///    umounts FunctionFS, removes configfs nodes) and bring up `aap` as
+///    `0x18d1:0x2d00` (Google AOAP accessory) with EP1 IN + EP2 OUT.
+///    Wait for `FUNCTIONFS_ENABLE` from the re-enumerated host, hand
+///    EP1/EP2 back to the caller.
+///
+/// History: an earlier "skip-handshake" variant presented `0x18d1:0x2d00`
+/// directly without Phase 1.  That worked against `openauto` and against a
+/// Mac host (which accepts any descriptor) but caused Audi MMI 2022 to
+/// reboot — the HU's USB state machine apparently can't reach the
+/// accessory persona without seeing the mode-switch first. AACS uses the
+/// same direct approach and is reportedly rejected by several modern HUs
+/// (2022 Chevy Bolt, 2023 Mercedes — see github.com/tomasz-grobelny/AACS
+/// issue #32), which lines up.
 ///
 /// Returns `(gadget_guard, ep1_tx, ep2_rx)` where:
 /// - `gadget_guard` — keeps the accessory gadget alive; drop it to disable USB.
@@ -178,33 +186,66 @@ impl Drop for GadgetHandle {
 /// **Blocking**: must be called from a blocking thread (e.g. `spawn_blocking`).
 pub fn run_handshake() -> io::Result<(GadgetHandle, fs::File, fs::File)> {
     flight_log("run_handshake: entered");
-    // ── Accessory gadget — EP1 IN + EP2 OUT ───────────────────────────────
-    info!("USB: setting up accessory gadget ({GADGET_ACC}) — skip-handshake");
+
+    // ── Phase 1: initial MTP-like persona for AOAP mode-switch ────────────
+    info!("USB: phase 1 — setting up initial gadget ({GADGET_INIT}) as Pixel MTP (0x18d1:0x4ee1)");
+    setup_gadget(GADGET_INIT, 0x18d1, 0x4ee1, FFS_MOUNT_INIT)?;
+    flight_log("run_handshake: phase 1 setup_gadget done");
+    let init_guard = GadgetHandle {
+        gadget_name: GADGET_INIT.to_owned(),
+        ffs_mount: FFS_MOUNT_INIT.to_owned(),
+    };
+
+    let (mut ep0_init, ep1_idle, ep2_idle, ep3_idle) = write_and_enable_initial(
+        GADGET_INIT,
+        FFS_MOUNT_INIT,
+        &descriptors::initial_descriptors(),
+    )?;
+    flight_log("run_handshake: phase 1 write_and_enable_initial done (UDC bound as MTP)");
+
+    info!("USB: phase 1 — waiting for AOAP vendor requests 51/52/53 from HU");
+    wait_for_aoap(&mut ep0_init)?;
+    flight_log("run_handshake: phase 1 wait_for_aoap returned (Start-Accessory received)");
+
+    // Tear down Phase 1 explicitly. Drop order: ep0 + idle bulk/intr
+    // file handles first (closes those fds — kernel requires this before
+    // unbinding the function), then the guard (whose Drop unbinds UDC,
+    // umounts FunctionFS, removes configfs hierarchy). The HU sees
+    // device-removed at this point and prepares to re-enumerate as the
+    // accessory persona.
+    drop(ep0_init);
+    drop(ep1_idle);
+    drop(ep2_idle);
+    drop(ep3_idle);
+    drop(init_guard);
+    flight_log("run_handshake: phase 1 teardown complete (UDC unbound, configfs cleared)");
+
+    // ── Phase 2: accessory persona — EP1 IN + EP2 OUT ─────────────────────
+    info!("USB: phase 2 — setting up accessory gadget ({GADGET_ACC}) as 0x18d1:0x2d00");
     setup_gadget(GADGET_ACC, 0x18d1, 0x2d00, FFS_MOUNT_ACC)?;
-    flight_log("run_handshake: setup_gadget done");
+    flight_log("run_handshake: phase 2 setup_gadget done");
     let acc_guard = GadgetHandle {
         gadget_name: GADGET_ACC.to_owned(),
         ffs_mount: FFS_MOUNT_ACC.to_owned(),
     };
 
     // write_and_enable returns *all three* FunctionFS file handles. The
-    // ordering is critical and matches AACS (the reference implementation):
-    // ep1/ep2 must be opened AFTER descriptors are written (so the kernel
-    // has created the endpoint nodes) but BEFORE the UDC is bound (after
-    // bind, the kernel hands those endpoints over to the host stack and
-    // the file nodes disappear from the FunctionFS mount).  An earlier
-    // revision tried to open ep1/ep2 only after FUNCTIONFS_ENABLE, which
-    // fails with ENOENT on a real Mac host.
+    // ordering is critical and matches AACS: ep1/ep2 must be opened AFTER
+    // descriptors are written (so the kernel has created the endpoint
+    // nodes) but BEFORE the UDC is bound (after bind, the kernel hands
+    // those endpoints over to the host stack and the file nodes disappear
+    // from the FunctionFS mount). An earlier revision opened ep1/ep2 only
+    // after FUNCTIONFS_ENABLE, which fails with ENOENT on a real host.
     let (mut ep0_acc, ep1, ep2) = write_and_enable(
         GADGET_ACC,
         FFS_MOUNT_ACC,
         &descriptors::accessory_descriptors(),
     )?;
-    flight_log("run_handshake: write_and_enable done (ep0/ep1/ep2 open, UDC bound)");
+    flight_log("run_handshake: phase 2 write_and_enable done (ep0/ep1/ep2 open, UDC bound)");
 
-    info!("USB: waiting for host to enumerate accessory gadget");
+    info!("USB: phase 2 — waiting for host to enumerate accessory gadget");
     wait_for_enable(&mut ep0_acc)?;
-    flight_log("run_handshake: wait_for_enable returned (FUNCTIONFS_ENABLE received)");
+    flight_log("run_handshake: phase 2 wait_for_enable returned (FUNCTIONFS_ENABLE received)");
     drop(ep0_acc);
 
     // Last sync point before handing the bulk endpoints back to the async
@@ -408,14 +449,135 @@ fn write_and_enable(
     Ok((ep0, ep1, ep2))
 }
 
+/// Phase-1 variant of `write_and_enable` for the MTP-like initial persona.
+///
+/// Writes descriptors, opens ep0 + the three MTP-style endpoints (bulk
+/// IN, bulk OUT, interrupt IN — same as `initial_descriptors()`), then
+/// binds the UDC. The bulk/interrupt endpoints are held open by this
+/// function's caller but never serviced; they exist solely so the host
+/// sees a phone-shaped device and triggers its AOAP-probe path on ep0.
+///
+/// Returns `(ep0, ep1_idle, ep2_idle, ep3_idle)`. The three `_idle`
+/// handles are dropped when Phase 1 ends (and along with them the
+/// FunctionFS endpoint allocations), so no fd leaks. Same ordering
+/// invariants as `write_and_enable`: write descriptors → open all
+/// endpoints → symlink function into config → bind UDC.
+fn write_and_enable_initial(
+    gadget_name: &str,
+    ffs_mount: &str,
+    descs: &[u8],
+) -> io::Result<(fs::File, fs::File, fs::File, fs::File)> {
+    flight_log("write_and_enable_initial: entered");
+    let ep0_path = format!("{ffs_mount}/ep0");
+    debug!(path = %ep0_path, "opening ep0 (initial)");
+    let mut ep0 = fs::File::options().read(true).write(true).open(&ep0_path)?;
+    flight_log("write_and_enable_initial: ep0 opened");
+
+    ep0.write_all(descs).map_err(|e| {
+        flight_log(&format!(
+            "write_and_enable_initial: ep0 descs write FAILED: {e}"
+        ));
+        io::Error::new(
+            e.kind(),
+            format!(
+                "ep0 (initial) write descriptors ({} bytes): {e}",
+                descs.len()
+            ),
+        )
+    })?;
+    let strs = descriptors::strings();
+    ep0.write_all(&strs).map_err(|e| {
+        flight_log(&format!(
+            "write_and_enable_initial: ep0 strings write FAILED: {e}"
+        ));
+        io::Error::new(
+            e.kind(),
+            format!("ep0 (initial) write strings ({} bytes): {e}", strs.len()),
+        )
+    })?;
+    flight_log("write_and_enable_initial: ep0 descriptors+strings written");
+
+    // Open the three MTP-style data endpoints we declared. The kernel
+    // requires every declared endpoint to be opened by userspace before
+    // the function is bound to a UDC. They stay open for the lifetime
+    // of Phase 1 and are dropped (closed) when run_handshake's
+    // `drop(ep_idle_*)` runs. We never read or write them — the car may
+    // try MTP transfers on them; those just sit in kernel buffers /
+    // time out, which is fine because the AOAP probe happens on ep0
+    // and is what we actually care about.
+    let ep1_path = format!("{ffs_mount}/ep1");
+    let ep1_idle = fs::File::options()
+        .write(true)
+        .open(&ep1_path)
+        .map_err(|e| {
+            flight_log(&format!(
+                "write_and_enable_initial: open {ep1_path} (idle bulk IN) FAILED: {e}"
+            ));
+            io::Error::new(e.kind(), format!("open {ep1_path} (idle bulk IN): {e}"))
+        })?;
+    flight_log("write_and_enable_initial: ep1 (idle bulk IN) opened");
+
+    let ep2_path = format!("{ffs_mount}/ep2");
+    let ep2_idle = fs::File::options()
+        .read(true)
+        .open(&ep2_path)
+        .map_err(|e| {
+            flight_log(&format!(
+                "write_and_enable_initial: open {ep2_path} (idle bulk OUT) FAILED: {e}"
+            ));
+            io::Error::new(e.kind(), format!("open {ep2_path} (idle bulk OUT): {e}"))
+        })?;
+    flight_log("write_and_enable_initial: ep2 (idle bulk OUT) opened");
+
+    let ep3_path = format!("{ffs_mount}/ep3");
+    let ep3_idle = fs::File::options()
+        .write(true)
+        .open(&ep3_path)
+        .map_err(|e| {
+            flight_log(&format!(
+                "write_and_enable_initial: open {ep3_path} (idle interrupt IN) FAILED: {e}"
+            ));
+            io::Error::new(
+                e.kind(),
+                format!("open {ep3_path} (idle interrupt IN): {e}"),
+            )
+        })?;
+    flight_log("write_and_enable_initial: ep3 (idle interrupt IN) opened");
+
+    let g = format!("{CONFIGFS_ROOT}/{gadget_name}");
+    let src = format!("{g}/functions/ffs.{gadget_name}");
+    let dst = format!("{g}/configs/c.1/ffs.{gadget_name}");
+    if !Path::new(&dst).exists() {
+        std::os::unix::fs::symlink(&src, &dst)
+            .map_err(|e| io::Error::new(e.kind(), format!("symlink {src} -> {dst}: {e}")))?;
+    }
+
+    let udc = find_udc()?;
+    flight_log(&format!(
+        "write_and_enable_initial: found UDC {udc}, about to bind"
+    ));
+    info!(gadget = gadget_name, udc = %udc, "USB: binding initial gadget to UDC");
+    let udc_path = format!("{g}/UDC");
+    fs::write(&udc_path, format!("{udc}\n")).map_err(|e| {
+        flight_log(&format!("write_and_enable_initial: UDC bind FAILED: {e}"));
+        io::Error::new(
+            e.kind(),
+            format!("UDC bind (initial) failed ({udc_path} <- '{udc}'): {e}"),
+        )
+    })?;
+    flight_log(
+        "write_and_enable_initial: UDC bind WRITE returned Ok (host can now see MTP-like persona)",
+    );
+    flush_logs();
+
+    Ok((ep0, ep1_idle, ep2_idle, ep3_idle))
+}
+
 /// Read ep0 events and respond to AOAP vendor requests.
 ///
-/// Returns when `AOAP_START_ACCESSORY` (req 53) is received.
-///
-/// Unused by the current skip-handshake `run_handshake`; kept so an HU that
-/// requires the two-persona dance can be supported by re-wiring the caller.
-#[allow(dead_code)]
-/// The host will disconnect and re-enumerate after this request.
+/// Returns when `AOAP_START_ACCESSORY` (req 53) is received — the host
+/// will then disconnect us and re-enumerate as the accessory persona,
+/// which is what Phase 2 of `run_handshake` brings up.
 fn wait_for_aoap(ep0: &mut fs::File) -> io::Result<()> {
     // usb_functionfs_event is 12 bytes:
     //   [0..7]  union { usb_ctrlrequest (8 bytes) | u8 number }
@@ -432,25 +594,54 @@ fn wait_for_aoap(ep0: &mut fs::File) -> io::Result<()> {
         let b_request = event[1]; // only meaningful for FUNCTIONFS_SETUP
 
         match event_type {
-            FUNCTIONFS_BIND => debug!("ep0: BIND"),
-            FUNCTIONFS_ENABLE => debug!("ep0: ENABLE"),
+            FUNCTIONFS_BIND => {
+                flight_log("wait_for_aoap: ep0 BIND");
+                debug!("ep0: BIND");
+            }
+            FUNCTIONFS_ENABLE => {
+                flight_log("wait_for_aoap: ep0 ENABLE");
+                debug!("ep0: ENABLE");
+            }
             FUNCTIONFS_SETUP => match b_request {
                 AOAP_GET_PROTOCOL => {
+                    flight_log("wait_for_aoap: AOAP 51 Get-Protocol, responding v2");
                     debug!("AOAP req 51: Get-Protocol → v2");
-                    ep0.write_all(&[0x02, 0x00])?; // AOAP protocol version 2 (LE16)
+                    ep0.write_all(&[0x02, 0x00]).map_err(|e| {
+                        flight_log(&format!(
+                            "wait_for_aoap: AOAP 51 response write FAILED: {e}"
+                        ));
+                        e
+                    })?;
+                    flight_log("wait_for_aoap: AOAP 51 response sent");
                 }
                 AOAP_SEND_STRING => {
                     let idx = u16::from_le_bytes([event[4], event[5]]);
+                    flight_log(&format!(
+                        "wait_for_aoap: AOAP 52 Send-String idx={idx} (no reply)"
+                    ));
                     debug!("AOAP req 52: Send-String idx={idx} (no response needed)");
                     // OUT transfer — host sends string; no IN reply required.
                 }
                 AOAP_START_ACCESSORY => {
+                    flight_log("wait_for_aoap: AOAP 53 Start-Accessory, exiting Phase 1");
                     debug!("AOAP req 53: Start-Accessory");
                     return Ok(());
                 }
-                other => debug!("ep0 SETUP: unknown bRequest={other}"),
+                other => {
+                    flight_log(&format!(
+                        "wait_for_aoap: unexpected SETUP bRequest={other} bRequestType={} wValue={} wIndex={} wLength={}",
+                        event[0],
+                        u16::from_le_bytes([event[2], event[3]]),
+                        u16::from_le_bytes([event[4], event[5]]),
+                        u16::from_le_bytes([event[6], event[7]]),
+                    ));
+                    debug!("ep0 SETUP: unknown bRequest={other}");
+                }
             },
-            other => debug!("ep0: unknown event type={other}"),
+            other => {
+                flight_log(&format!("wait_for_aoap: unknown event_type={other}"));
+                debug!("ep0: unknown event type={other}");
+            }
         }
     }
 }
@@ -503,6 +694,7 @@ fn wait_for_enable(ep0: &mut fs::File) -> io::Result<()> {
         let since_last = last_heartbeat.elapsed();
         match evt {
             FUNCTIONFS_ENABLE => {
+                flight_log("wait_for_enable: ENABLE received");
                 info!(
                     total_events = events,
                     elapsed_s = started.elapsed().as_secs(),
@@ -511,21 +703,36 @@ fn wait_for_enable(ep0: &mut fs::File) -> io::Result<()> {
                 flush_logs();
                 return Ok(());
             }
-            FUNCTIONFS_BIND => debug!(elapsed_ms = since_last.as_millis(), "acc ep0: BIND"),
-            FUNCTIONFS_SETUP => debug!(
-                elapsed_ms = since_last.as_millis(),
-                bRequestType = event[0],
-                bRequest = event[1],
-                wValue = u16::from_le_bytes([event[2], event[3]]),
-                wIndex = u16::from_le_bytes([event[4], event[5]]),
-                wLength = u16::from_le_bytes([event[6], event[7]]),
-                "acc ep0: SETUP (unexpected before ENABLE)"
-            ),
-            other => debug!(
-                elapsed_ms = since_last.as_millis(),
-                evt = other,
-                "acc ep0: event"
-            ),
+            FUNCTIONFS_BIND => {
+                flight_log("wait_for_enable: acc ep0 BIND");
+                debug!(elapsed_ms = since_last.as_millis(), "acc ep0: BIND");
+            }
+            FUNCTIONFS_SETUP => {
+                flight_log(&format!(
+                    "wait_for_enable: SETUP (pre-ENABLE) bRequest={} wValue={} wIndex={} wLength={}",
+                    event[1],
+                    u16::from_le_bytes([event[2], event[3]]),
+                    u16::from_le_bytes([event[4], event[5]]),
+                    u16::from_le_bytes([event[6], event[7]]),
+                ));
+                debug!(
+                    elapsed_ms = since_last.as_millis(),
+                    bRequestType = event[0],
+                    bRequest = event[1],
+                    wValue = u16::from_le_bytes([event[2], event[3]]),
+                    wIndex = u16::from_le_bytes([event[4], event[5]]),
+                    wLength = u16::from_le_bytes([event[6], event[7]]),
+                    "acc ep0: SETUP (unexpected before ENABLE)"
+                );
+            }
+            other => {
+                flight_log(&format!("wait_for_enable: unknown event_type={other}"));
+                debug!(
+                    elapsed_ms = since_last.as_millis(),
+                    evt = other,
+                    "acc ep0: event"
+                );
+            }
         }
         last_heartbeat = Instant::now();
     }
@@ -549,6 +756,7 @@ fn find_udc() -> io::Result<String> {
 /// propagated — `cleanup` runs from `Drop` and we want best-effort teardown
 /// even if the kernel state is partially gone (e.g. after a crash).
 fn cleanup(gadget_name: &str, ffs_mount: &str) -> io::Result<()> {
+    flight_log(&format!("cleanup: begin gadget={gadget_name}"));
     debug!(gadget = gadget_name, ffs_mount, "USB: cleanup begin");
     let g = format!("{CONFIGFS_ROOT}/{gadget_name}");
 
@@ -556,6 +764,7 @@ fn cleanup(gadget_name: &str, ffs_mount: &str) -> io::Result<()> {
     if let Err(e) = fs::write(format!("{g}/UDC"), "\n") {
         debug!(error = %e, "cleanup: unbind UDC failed (already unbound?)");
     }
+    flight_log(&format!("cleanup: UDC unbound gadget={gadget_name}"));
 
     // Remove function symlink.
     let _ = fs::remove_file(format!("{g}/configs/c.1/ffs.{gadget_name}"));
@@ -581,6 +790,7 @@ fn cleanup(gadget_name: &str, ffs_mount: &str) -> io::Result<()> {
     let _ = fs::remove_dir(format!("{g}/strings/0x409"));
     let _ = fs::remove_dir(&g);
 
+    flight_log(&format!("cleanup: done gadget={gadget_name}"));
     debug!(gadget = gadget_name, "USB: cleanup done");
     Ok(())
 }

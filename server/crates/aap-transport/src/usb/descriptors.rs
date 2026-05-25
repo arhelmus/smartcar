@@ -16,29 +16,65 @@ const FUNCTIONFS_HAS_FS_DESC: u32 = 1 << 0;
 const FUNCTIONFS_HAS_HS_DESC: u32 = 1 << 1;
 /// Route ALL control transfers (not just interface-directed) to ep0.
 /// Required so FunctionFS sees the AOAP vendor requests (device-directed).
-const FUNCTIONFS_ALL_CTRL_RECIP: u32 = 1 << 4;
+///
+/// Bit position MUST be 6 — per `include/uapi/linux/usb/functionfs.h`:
+///   `FUNCTIONFS_HAS_SS_DESC      = (1 << 2)`
+///   `FUNCTIONFS_HAS_MS_OS_DESC   = (1 << 3)`
+///   `FUNCTIONFS_VIRTUAL_ADDR     = (1 << 4)`
+///   `FUNCTIONFS_EVENTFD          = (1 << 5)`
+///   `FUNCTIONFS_ALL_CTRL_RECIP   = (1 << 6)`
+///   `FUNCTIONFS_CONFIG0_SETUP    = (1 << 7)`
+/// An earlier revision had this as `1 << 4`, which silently sets
+/// `FUNCTIONFS_VIRTUAL_ADDR` instead (changes endpoint file naming to
+/// `ep_<addr>`) and leaves ALL_CTRL_RECIP off — so the AOAP vendor
+/// requests 51/52/53 would never reach ep0 in the initial persona.
+const FUNCTIONFS_ALL_CTRL_RECIP: u32 = 1 << 6;
 
 // ── USB descriptor types ──────────────────────────────────────────────────────
 
 const USB_DT_INTERFACE: u8 = 4;
 const USB_DT_ENDPOINT: u8 = 5;
 
+// USB class codes used by the initial AOAP-mode-switch persona. We mirror
+// a real Pixel in MTP mode (Image class / Still Image subclass / PTP
+// protocol) so the car's AA-handler software actually recognises us as
+// a phone and bothers to probe for AOAP support via vendor request 51.
+// (Audi MMI 2022 enumerated our previous vendor-class-with-no-endpoints
+// initial descriptor at the kernel level but never sent the AOAP probe —
+// it apparently filters AOAP candidates by interface class / endpoint
+// presence, not just VID.)
+const USB_CLASS_IMAGE: u8 = 0x06;
+const USB_SUBCLASS_STILL_IMAGE: u8 = 0x01;
+const USB_PROTOCOL_PTP: u8 = 0x01;
+
 // ── Public builders ───────────────────────────────────────────────────────────
 
 /// Descriptor blob for the initial AOAP negotiation gadget.
 ///
-/// No data endpoints — only ep0 for control.  Uses `FUNCTIONFS_ALL_CTRL_RECIP`
-/// so FunctionFS ep0 receives the device-directed AOAP vendor requests 51/52/53.
+/// Presents as a Pixel-in-MTP-mode phone: Still Image (PTP) class
+/// interface with the three endpoints a real MTP phone exposes — bulk
+/// IN, bulk OUT, interrupt IN. The bulk endpoints are never serviced
+/// in userspace; they exist solely so the host sees a phone-shaped
+/// device and triggers its AOAP-probe path on ep0 (vendor request 51).
 ///
-/// Unused by the current skip-handshake `run_handshake`; kept for HUs that
-/// require seeing the two-persona AOAP mode-switch.
-#[allow(dead_code)]
+/// `FUNCTIONFS_ALL_CTRL_RECIP` is set so the device-directed AOAP
+/// vendor requests reach ep0 in userspace.
 pub fn initial_descriptors() -> Vec<u8> {
-    let intf = interface_descriptor(0);
+    // Three endpoints, same as a real Pixel MTP interface.
+    let mut fs = ptp_interface_descriptor(3);
+    fs.extend_from_slice(&endpoint_descriptor(0x81, 64)); // EP1 IN  bulk  64 B (FS)
+    fs.extend_from_slice(&endpoint_descriptor(0x02, 64)); // EP2 OUT bulk  64 B (FS)
+    fs.extend_from_slice(&interrupt_endpoint_descriptor(0x83, 28, 6)); // EP3 IN intr
+
+    let mut hs = ptp_interface_descriptor(3);
+    hs.extend_from_slice(&endpoint_descriptor(0x81, 512));
+    hs.extend_from_slice(&endpoint_descriptor(0x02, 512));
+    hs.extend_from_slice(&interrupt_endpoint_descriptor(0x83, 28, 6));
+
     descriptor_blob(
         FUNCTIONFS_HAS_FS_DESC | FUNCTIONFS_HAS_HS_DESC | FUNCTIONFS_ALL_CTRL_RECIP,
-        &intf,
-        &intf,
+        &fs,
+        &hs,
     )
 }
 
@@ -139,6 +175,23 @@ fn interface_descriptor(num_endpoints: u8) -> Vec<u8> {
     ]
 }
 
+/// PTP/MTP-class interface for the initial AOAP-mode-switch persona.
+/// Class/subclass/protocol match a real Pixel in MTP mode so the host
+/// recognises us as a phone.
+fn ptp_interface_descriptor(num_endpoints: u8) -> Vec<u8> {
+    vec![
+        9,                        // bLength
+        USB_DT_INTERFACE,         // bDescriptorType
+        0,                        // bInterfaceNumber
+        0,                        // bAlternateSetting
+        num_endpoints,            // bNumEndpoints
+        USB_CLASS_IMAGE,          // bInterfaceClass
+        USB_SUBCLASS_STILL_IMAGE, // bInterfaceSubClass
+        USB_PROTOCOL_PTP,         // bInterfaceProtocol
+        1,                        // iInterface → string index 1
+    ]
+}
+
 fn endpoint_descriptor(address: u8, max_packet: u16) -> Vec<u8> {
     let [lo, hi] = max_packet.to_le_bytes();
     vec![
@@ -149,6 +202,22 @@ fn endpoint_descriptor(address: u8, max_packet: u16) -> Vec<u8> {
         lo,
         hi, // wMaxPacketSize    (LE16)
         0,  // bInterval         (0 for bulk)
+    ]
+}
+
+/// Interrupt endpoint — used by the MTP-like initial persona for the
+/// event-notification endpoint a real Pixel exposes (EP3 IN, 28 bytes,
+/// poll interval 6 = `2^(6-1)=32` microframes ≈ 4 ms at HS).
+fn interrupt_endpoint_descriptor(address: u8, max_packet: u16, interval: u8) -> Vec<u8> {
+    let [lo, hi] = max_packet.to_le_bytes();
+    vec![
+        7,               // bLength
+        USB_DT_ENDPOINT, // bDescriptorType
+        address,         // bEndpointAddress
+        0x03,            // bmAttributes (Interrupt)
+        lo,
+        hi,       // wMaxPacketSize (LE16)
+        interval, // bInterval
     ]
 }
 
