@@ -32,13 +32,10 @@ make assign                              # one-time per session (sudo prompt)
 make deploy                              # full deploy
 make deploy -- --check                   # ansible --check --diff, no restart
 make deploy -- --skip-build              # use the binary already on the board
-python3 scripts/deploy.py --runtime-args "--log debug,aap_core=trace"
-                                          # one-shot ExecStart override
-                                          # (transient, evaporates on reboot)
 ```
 
-The board must be in CAR mode (jumper or `car-mode-once`) for the
-restart to take effect — see `docs/board-setup.md`.
+The board must be in CAR mode for the restart to take effect — see
+`docs/board-setup.md`.
 
 ## Review
 

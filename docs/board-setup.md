@@ -116,9 +116,6 @@ sequence makes it dead weight. See `git log` for the rework.)
 python3 scripts/deploy.py                        # full deploy (release)
 python3 scripts/deploy.py --check                # ansible --check --diff, no restart
 python3 scripts/deploy.py --skip-build           # use binary already on the board
-python3 scripts/deploy.py --runtime-args "--log debug --bridge tcp"
-                                                  # transient ExecStart override,
-                                                  # evaporates on reboot
 
 # To use USB car mode manually without the jumper:
 # SSH in, then:
