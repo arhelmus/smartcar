@@ -187,31 +187,31 @@ pub fn run_handshake() -> io::Result<(GadgetHandle, fs::File, fs::File)> {
         ffs_mount: FFS_MOUNT_ACC.to_owned(),
     };
 
-    let mut ep0_acc = write_and_enable(
+    // write_and_enable returns *all three* FunctionFS file handles. The
+    // ordering is critical and matches AACS (the reference implementation):
+    // ep1/ep2 must be opened AFTER descriptors are written (so the kernel
+    // has created the endpoint nodes) but BEFORE the UDC is bound (after
+    // bind, the kernel hands those endpoints over to the host stack and
+    // the file nodes disappear from the FunctionFS mount).  An earlier
+    // revision tried to open ep1/ep2 only after FUNCTIONFS_ENABLE, which
+    // fails with ENOENT on a real Mac host.
+    let (mut ep0_acc, ep1, ep2) = write_and_enable(
         GADGET_ACC,
         FFS_MOUNT_ACC,
         &descriptors::accessory_descriptors(),
     )?;
-    flight_log("run_handshake: write_and_enable done (UDC bound, host can see us)");
+    flight_log("run_handshake: write_and_enable done (ep0/ep1/ep2 open, UDC bound)");
 
     info!("USB: waiting for host to enumerate accessory gadget");
     wait_for_enable(&mut ep0_acc)?;
     flight_log("run_handshake: wait_for_enable returned (FUNCTIONFS_ENABLE received)");
     drop(ep0_acc);
-    info!("USB: host enumerated; opening bulk endpoints");
-
-    let ep1 = fs::File::options()
-        .write(true)
-        .open(format!("{FFS_MOUNT_ACC}/ep1"))?;
-    let ep2 = fs::File::options()
-        .read(true)
-        .open(format!("{FFS_MOUNT_ACC}/ep2"))?;
 
     // Last sync point before handing the bulk endpoints back to the async
     // transport. Anything that happens after this is governed by the bulk
     // flow's own per-frame logs.
     flush_logs();
-    flight_log("run_handshake: ep1/ep2 open, returning Ok");
+    flight_log("run_handshake: ep0 dropped, returning Ok with ep1/ep2");
     Ok((acc_guard, ep1, ep2))
 }
 
@@ -291,10 +291,27 @@ fn setup_gadget(name: &str, vid: u16, pid: u16, ffs_mount: &str) -> io::Result<(
     Ok(())
 }
 
-/// Write descriptor + strings blobs to ep0, link function into config, enable gadget.
+/// Write descriptor + strings blobs to ep0, open the bulk endpoints, then
+/// enable the gadget by binding it to the UDC.
 ///
-/// Returns the open ep0 file (needed for reading events).
-fn write_and_enable(gadget_name: &str, ffs_mount: &str, descs: &[u8]) -> io::Result<fs::File> {
+/// Returns `(ep0, ep1, ep2)` — ep0 for reading FunctionFS events, ep1 for
+/// outbound writes, ep2 for inbound reads.
+///
+/// # Why this order
+///
+/// Matches AACS (`AaCommunicator::setup`): write descs/strings → open
+/// ep1/ep2 → bind UDC. The bulk-endpoint file nodes (`ep1`, `ep2`) are
+/// created by the kernel when the descriptor blob is parsed, and they
+/// remain openable from userspace ONLY between then and the UDC bind.
+/// After the bind, the host's enumeration starts using those endpoints
+/// through the kernel function driver and the file nodes disappear from
+/// the FunctionFS mount — attempting to open them after that returns
+/// ENOENT (confirmed empirically against a Mac host).
+fn write_and_enable(
+    gadget_name: &str,
+    ffs_mount: &str,
+    descs: &[u8],
+) -> io::Result<(fs::File, fs::File, fs::File)> {
     flight_log("write_and_enable: entered");
     let ep0_path = format!("{ffs_mount}/ep0");
     debug!(path = %ep0_path, "opening ep0");
@@ -323,6 +340,33 @@ fn write_and_enable(gadget_name: &str, ffs_mount: &str, descs: &[u8]) -> io::Res
         strings_bytes = strs.len(),
         "FunctionFS descriptors written to {ep0_path}"
     );
+
+    // Open ep1/ep2 NOW — between descriptor processing and UDC bind. See
+    // function-level comment for why this window is the only one where
+    // the open succeeds on a real Mac host.
+    let ep1_path = format!("{ffs_mount}/ep1");
+    let ep1 = fs::File::options()
+        .write(true)
+        .open(&ep1_path)
+        .map_err(|e| {
+            flight_log(&format!(
+                "write_and_enable: open {ep1_path} (write) FAILED: {e}"
+            ));
+            io::Error::new(e.kind(), format!("open {ep1_path} (write): {e}"))
+        })?;
+    flight_log("write_and_enable: ep1 opened (pre-UDC-bind)");
+
+    let ep2_path = format!("{ffs_mount}/ep2");
+    let ep2 = fs::File::options()
+        .read(true)
+        .open(&ep2_path)
+        .map_err(|e| {
+            flight_log(&format!(
+                "write_and_enable: open {ep2_path} (read) FAILED: {e}"
+            ));
+            io::Error::new(e.kind(), format!("open {ep2_path} (read): {e}"))
+        })?;
+    flight_log("write_and_enable: ep2 opened (pre-UDC-bind)");
 
     // Symlink function into config AFTER descriptors are written.
     let g = format!("{CONFIGFS_ROOT}/{gadget_name}");
@@ -361,7 +405,7 @@ fn write_and_enable(gadget_name: &str, ffs_mount: &str, descs: &[u8]) -> io::Res
     // we still have power.
     flush_logs();
 
-    Ok(ep0)
+    Ok((ep0, ep1, ep2))
 }
 
 /// Read ep0 events and respond to AOAP vendor requests.

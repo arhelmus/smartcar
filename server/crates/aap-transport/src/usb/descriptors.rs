@@ -82,17 +82,28 @@ pub fn strings() -> Vec<u8> {
 // ── Private helpers ───────────────────────────────────────────────────────────
 
 /// Build a V2 descriptor blob for the given full-speed / high-speed descriptor sets.
+///
+/// Layout per `linux/usb/functionfs.h` — **all the per-speed counts come
+/// before any descriptor blob**, not interleaved:
+///
+/// ```text
+/// | magic | length | flags | fs_count | hs_count | fs_descs… | hs_descs… |
+/// ```
+///
+/// (Earlier this was `fs_count | fs_descs | hs_count | hs_descs`, which
+/// made the kernel parse `hs_count` out of the middle of `fs_descs`,
+/// fail the `length == len` check, and reject the blob with EINVAL.)
 fn descriptor_blob(flags: u32, fs_descs: &[u8], hs_descs: &[u8]) -> Vec<u8> {
-    // header(12) + fs_count(4) + fs_descs + hs_count(4) + hs_descs
-    let total = 12u32 + 4 + fs_descs.len() as u32 + 4 + hs_descs.len() as u32;
+    // header(12) + fs_count(4) + hs_count(4) + fs_descs + hs_descs
+    let total = 12u32 + 4 + 4 + fs_descs.len() as u32 + hs_descs.len() as u32;
 
     let mut buf = Vec::with_capacity(total as usize);
     put_le32(&mut buf, FUNCTIONFS_DESCRIPTORS_MAGIC_V2);
     put_le32(&mut buf, total);
     put_le32(&mut buf, flags);
     put_le32(&mut buf, count_usb_descriptors(fs_descs) as u32);
-    buf.extend_from_slice(fs_descs);
     put_le32(&mut buf, count_usb_descriptors(hs_descs) as u32);
+    buf.extend_from_slice(fs_descs);
     buf.extend_from_slice(hs_descs);
     buf
 }
