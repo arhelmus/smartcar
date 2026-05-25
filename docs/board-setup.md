@@ -65,7 +65,13 @@ sequence makes it dead weight. See `git log` for the rework.)
    `smartcar-server` exits at the very first `mkdir` with `ENOENT` because
    `/sys/kernel/config/usb_gadget/` doesn't exist.
 
-2. **`usb-mode.service`** runs early. It reads PI16 (`gpiochip1`, line 272) with an internal pull-up via `gpioget`. If the pin is LOW, it creates `/run/usb-car-mode`.
+2. **`usb-mode.service`** runs early. The script first checks for the
+   one-shot software override `/var/lib/smartcar/car-mode-once`: if present
+   it is deleted and `/run/usb-car-mode` is created unconditionally — that
+   path is for SSH-driven Mac testing without touching the jumper, see
+   "Forcing car mode without the jumper" below. Otherwise the script reads
+   PI16 (`gpiochip1`, line 272) with an internal pull-up via `gpioget`; if
+   the pin is LOW it creates `/run/usb-car-mode`.
 
 3. **`g_ether-load.service`** runs `After=usb-mode.service` with
    `ConditionPathExists=!/run/usb-car-mode`. In **dev mode** the condition
@@ -90,7 +96,8 @@ sequence makes it dead weight. See `git log` for the rework.)
 
 | Path | Purpose |
 |---|---|
-| `/usr/local/sbin/usb-mode-select.sh` | Reads GPIO, creates `/run/usb-car-mode` if in car mode |
+| `/usr/local/sbin/usb-mode-select.sh` | Honours `/var/lib/smartcar/car-mode-once` one-shot override first; otherwise reads GPIO and creates `/run/usb-car-mode` if in car mode |
+| `/var/lib/smartcar/car-mode-once` | One-shot trigger (touch + reboot) that forces car mode for the next boot only; consumed by `usb-mode-select.sh` before it commits |
 | `/etc/systemd/system/usb-mode.service` | Oneshot service, runs `usb-mode-select.sh` at boot |
 | `/etc/systemd/system/g_ether-load.service` | Loads `g_ether` only when **not** in car mode (`ConditionPathExists=!/run/usb-car-mode`) |
 | `/etc/systemd/system/smartcar-server.service` | Starts `smartcar-server`, conditional on `/run/usb-car-mode` |
@@ -115,6 +122,44 @@ python3 scripts/run_board.py --laptop-ip 10.55.0.2
 modprobe -r g_ether
 /usr/local/bin/smartcar-server --transport usb
 ```
+
+### Forcing car mode without the jumper (`debug_usb_gadget.py`)
+
+For Mac-side gadget testing it's awkward to fiddle with the header jumper
+between every iteration. `usb-mode-select.sh` honours a one-shot software
+override: drop `/var/lib/smartcar/car-mode-once` and reboot, and the board
+will come up in car mode regardless of the GPIO. The script `rm`s the
+trigger file before it commits, so the *next* boot reverts to whatever the
+jumper actually says (i.e. dev mode if you left it off).
+
+When the override path is taken, `usb-mode-select.sh` also schedules a
+transient `systemd-run --on-active=30s -- /sbin/reboot` so the board
+auto-reverts to dev mode after a 30 s car-mode window — no power-cycle
+needed to get SSH back. (The transient unit is owned by PID 1 and
+survives the oneshot exiting.)
+
+```bash
+# Helper that does the full cycle: trigger, wait for auto-revert,
+# dump the flight log inline:
+python3 scripts/debug_usb_gadget.py
+
+# Or the raw one-liner if you just want to trigger and read logs by hand:
+ssh root@10.55.0.1 'mkdir -p /var/lib/smartcar && touch /var/lib/smartcar/car-mode-once && reboot'
+```
+
+Workflow for a Mac-host USB iteration (no car, no jumper, no walk, no
+power-cycle):
+
+1. `python3 scripts/deploy_board.py` — deploy a new binary in dev mode.
+2. `python3 scripts/debug_usb_gadget.py` — trigger car-mode boot,
+   wait ~60 s for the auto-revert, then print this iteration's
+   `/var/log.hdd/smartcar-boot.log` section to the terminal.
+
+If you accidentally leave the jumper *on* and use the override anyway,
+the override fires for the boot it triggers (and auto-reverts), but the
+auto-revert reboot then reads the jumper as LOW and lands you back in
+car mode (no auto-revert this time, since the trigger file is gone).
+Remove the jumper to get back to dev mode.
 
 ## Setup quirks (read before debugging weirdness)
 
