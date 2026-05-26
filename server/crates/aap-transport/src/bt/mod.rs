@@ -111,18 +111,19 @@ impl BtTransport {
         let car_addr = device.address();
         pair::warm_connect(&device, cfg.bt_connect_timeout).await;
 
-        // 3. RFCOMM client to AAWG channel (default 8).
-        let mut framed = rfcomm::Framed::connect(
-            car_addr,
-            rfcomm::AAWG_DEFAULT_RFCOMM_CHANNEL,
-            cfg.rfcomm_connect_timeout,
-        )
-        .await?;
-        info!(
-            channel = rfcomm::AAWG_DEFAULT_RFCOMM_CHANNEL,
-            %car_addr,
-            "bt: RFCOMM open to HU"
-        );
+        // 3. SDP-discover the actual AAWG RFCOMM channel on the HU. Real
+        // cars don't follow aa-proxy-rs's convention of binding AAWG to
+        // channel 8 — the channel is assigned by their BlueZ-equivalent
+        // at register-time and can be anything. Audi MMI 4379, for
+        // example, had something other than AAWG on 8 (probably HSP),
+        // which is why the previous hardcoded-8 connect succeeded but
+        // then read-timed out: the wrong service was on the wire.
+        let channel = pair::discover_aawg_channel(car_addr).await?;
+
+        // 4. RFCOMM client to the discovered channel.
+        let mut framed =
+            rfcomm::Framed::connect(car_addr, channel, cfg.rfcomm_connect_timeout).await?;
+        info!(channel, %car_addr, "bt: RFCOMM open to HU");
 
         // 4. Phone-side AAW handshake.
         let outcome = handshake::run_phone_side(&mut framed).await?;

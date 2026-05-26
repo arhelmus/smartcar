@@ -20,8 +20,9 @@ use bluer::{
 };
 use bytes::{Buf, BufMut, BytesMut};
 use prost::Message as ProstMessage;
+use std::fmt::Write as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{debug, trace, warn};
+use tracing::{debug, warn};
 
 use super::error::BtError;
 use super::proto::aaw::MessageId;
@@ -90,7 +91,17 @@ impl Framed {
         frame.put_u16(id as u16);
         frame.extend_from_slice(&body);
 
-        trace!(?id, body_bytes = body.len(), "rfcomm: tx frame");
+        // Log the parsed fields AND the raw 4-byte header bytes alongside
+        // a short prefix of the body — when something looks off mid-handshake
+        // (unknown id, suspicious length, off-by-one) the raw bytes are
+        // exactly what's needed and they're cheap to record.
+        debug!(
+            ?id,
+            body_bytes = body.len(),
+            header = %fmt_hex(&frame[..HEADER_LEN]),
+            body_prefix = %fmt_hex_prefix(&body, 32),
+            "rfcomm: tx frame"
+        );
         self.stream.write_all(&frame).await.map_err(BtError::Io)?;
         self.stream.flush().await.map_err(BtError::Io)?;
         Ok(())
@@ -103,8 +114,16 @@ impl Framed {
         while self.read_buf.len() < HEADER_LEN {
             self.fill(timeout).await?;
         }
-        let len = u16::from_be_bytes([self.read_buf[0], self.read_buf[1]]) as usize;
-        let id_raw = u16::from_be_bytes([self.read_buf[2], self.read_buf[3]]) as i32;
+        // Snapshot the raw header now, so even an unknown-id error message
+        // can include it verbatim.
+        let raw_header = [
+            self.read_buf[0],
+            self.read_buf[1],
+            self.read_buf[2],
+            self.read_buf[3],
+        ];
+        let len = u16::from_be_bytes([raw_header[0], raw_header[1]]) as usize;
+        let id_raw = u16::from_be_bytes([raw_header[2], raw_header[3]]) as i32;
 
         while self.read_buf.len() < HEADER_LEN + len {
             self.fill(timeout).await?;
@@ -113,10 +132,20 @@ impl Framed {
         self.read_buf.advance(HEADER_LEN);
         let body = self.read_buf.split_to(len);
 
-        let id = MessageId::try_from(id_raw)
-            .map_err(|_| BtError::Framing(format!("unknown AAW message id {id_raw}")))?;
+        let id = MessageId::try_from(id_raw).map_err(|_| {
+            BtError::Framing(format!(
+                "unknown AAW message id {id_raw} (raw header {})",
+                fmt_hex(&raw_header)
+            ))
+        })?;
 
-        trace!(?id, body_bytes = body.len(), "rfcomm: rx frame");
+        debug!(
+            ?id,
+            body_bytes = body.len(),
+            header = %fmt_hex(&raw_header),
+            body_prefix = %fmt_hex_prefix(&body, 32),
+            "rfcomm: rx frame"
+        );
         Ok((id, body))
     }
 
@@ -130,5 +159,55 @@ impl Framed {
             return Err(BtError::PeerClosed);
         }
         Ok(())
+    }
+}
+
+/// Format a byte slice as space-separated hex pairs (`00 11 22 33`).
+fn fmt_hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 3);
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 {
+            s.push(' ');
+        }
+        write!(&mut s, "{b:02x}").unwrap();
+    }
+    s
+}
+
+/// Format the first `max` bytes of `bytes` as hex, suffixed with `…` if
+/// truncated. Use for body previews — keeps the log line bounded while
+/// surfacing enough leading bytes to spot a protobuf type byte or a
+/// printable SSID prefix.
+fn fmt_hex_prefix(bytes: &[u8], max: usize) -> String {
+    if bytes.len() <= max {
+        fmt_hex(bytes)
+    } else {
+        format!("{} … (+{} more)", fmt_hex(&bytes[..max]), bytes.len() - max)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fmt_hex, fmt_hex_prefix};
+
+    #[test]
+    fn hex_format() {
+        assert_eq!(fmt_hex(&[]), "");
+        assert_eq!(fmt_hex(&[0]), "00");
+        assert_eq!(fmt_hex(&[0xde, 0xad, 0xbe, 0xef]), "de ad be ef");
+    }
+
+    #[test]
+    fn hex_prefix_truncates() {
+        let buf = [0x01_u8; 40];
+        let out = fmt_hex_prefix(&buf, 8);
+        assert!(out.starts_with("01 01 01 01 01 01 01 01 … "));
+        assert!(out.ends_with("(+32 more)"));
+    }
+
+    #[test]
+    fn hex_prefix_no_truncation() {
+        let buf = [0x42, 0x43];
+        assert_eq!(fmt_hex_prefix(&buf, 8), "42 43");
     }
 }
