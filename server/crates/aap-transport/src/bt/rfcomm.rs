@@ -12,38 +12,26 @@
 //! `len` is the length of the protobuf body only — the 4-byte header is *not*
 //! counted. The header constant in `aa-proxy-rs` is `HEADER_LEN = 4`.
 
-use std::time::Duration;
+use std::fmt::Write as _;
 
-use bluer::{
-    rfcomm::{SocketAddr, Stream},
-    Address,
-};
+use bluer::rfcomm::Stream;
 use bytes::{Buf, BufMut, BytesMut};
 use prost::Message as ProstMessage;
-use std::fmt::Write as _;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, warn};
 
 use super::error::BtError;
 use super::proto::aaw::MessageId;
 
-/// AAW SDP profile UUID, used for service discovery on the head unit and
-/// (when we eventually scan for a paired AAW peer) for filtering.
+/// AAW SDP profile UUID — `4de17a00-52cb-11e6-bdf4-0800200c9a66`.
 ///
-/// Source: `aa-proxy-rs/src/bluetooth.rs`:
-/// `AAWG_PROFILE_UUID = 0x4de17a0052cb11e6bdf40800200c9a66`.
-///
-/// Currently unused — v1 hardcodes channel 8 and doesn't run an SDP search.
-/// Kept here so the follow-up that adds SDP-based channel discovery has a
-/// single source of truth.
-#[allow(dead_code)]
+/// Source: `aa-proxy-rs/src/bluetooth.rs:42`. Used here both to register
+/// the local Profile in `pair::open_adapter` (so cars filtering their pair
+/// list by SDP UUID see us) and as the argument to `device.connect_profile(
+/// &AAWG_PROFILE_UUID)` (so BlueZ resolves the channel from its on-disk
+/// SDP cache and opens the RFCOMM connection without us touching it).
 pub const AAWG_PROFILE_UUID: uuid::Uuid = uuid::uuid!("4de17a00-52cb-11e6-bdf4-0800200c9a66");
-
-/// Conventional RFCOMM channel for the AAW service. Most head units register
-/// the AAWG SDP record on channel 8; we hard-code it here for v1 instead of
-/// doing an SDP service search. If the car uses a different channel the open
-/// will fail and we'll log it — a follow-up will add SDP-based discovery.
-pub const AAWG_DEFAULT_RFCOMM_CHANNEL: u8 = 8;
 
 /// Header is `[u16 length][u16 message_id]` — 4 bytes total.
 const HEADER_LEN: usize = 4;
@@ -55,24 +43,17 @@ pub struct Framed {
 }
 
 impl Framed {
-    /// Connect outbound to `addr:channel` over RFCOMM and return a framed
-    /// session. Times out after `connect_timeout` so a stuck pair-but-no-service
-    /// HU doesn't hang the whole transport bring-up.
-    pub async fn connect(
-        addr: Address,
-        channel: u8,
-        connect_timeout: Duration,
-    ) -> Result<Self, BtError> {
-        let sa = SocketAddr::new(addr, channel);
-        debug!(?sa, ?connect_timeout, "rfcomm: connecting");
-        let stream = tokio::time::timeout(connect_timeout, Stream::connect(sa))
-            .await
-            .map_err(|_| BtError::ConnectTimeout)?
-            .map_err(BtError::Io)?;
-        Ok(Self {
+    /// Wrap an already-open RFCOMM `Stream` with the AAW frame codec.
+    ///
+    /// The Stream comes from BlueZ's `Profile.NewConnection` callback (see
+    /// `pair::open_adapter` and `pair::connect_aawg_profile`) — either an
+    /// inbound car-initiated connection or our own outbound one. Either
+    /// way the AAW byte stream is identical from here on.
+    pub fn from_stream(stream: Stream) -> Self {
+        Self {
             stream,
             read_buf: BytesMut::with_capacity(1024),
-        })
+        }
     }
 
     /// Send one framed AAW message.

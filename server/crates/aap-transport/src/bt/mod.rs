@@ -55,9 +55,6 @@ pub struct BtConfig {
     /// branch of the unit template), so practically the board advertises
     /// for as long as it's powered.
     pub pair_wait_timeout: Duration,
-    /// Timeout for the BlueZ Device.Connect() warm-up after we found the
-    /// paired AAW peer. Default 8 s.
-    pub bt_connect_timeout: Duration,
     /// Timeout for the RFCOMM client open. Default 8 s.
     pub rfcomm_connect_timeout: Duration,
     /// Timeout for joining the HU's WiFi network. Default 25 s.
@@ -72,7 +69,6 @@ impl Default for BtConfig {
     fn default() -> Self {
         Self {
             pair_wait_timeout: Duration::from_secs(600),
-            bt_connect_timeout: Duration::from_secs(8),
             rfcomm_connect_timeout: Duration::from_secs(8),
             wifi_join_timeout: Duration::from_secs(25),
             dhcp_timeout: Duration::from_secs(15),
@@ -95,35 +91,70 @@ impl BtTransport {
         info!("bt: starting AAW bootstrap");
 
         // 1. BlueZ adapter: alias=smartcar, discoverable, Just Works agent
-        // registered, AAWG profile in SDP. The whole bundle stays alive for
-        // the lifetime of `connect`; dropping it at the end unregisters the
-        // agent + AAWG profile, which is fine because by then we have a
-        // bond and BlueZ no longer needs us listening for pair requests.
-        let bundle = pair::open_adapter().await?;
+        // registered, AAWG profile in SDP. `bundle.aawg_streams` is the
+        // mpsc receiver where the Profile's `NewConnection` callback
+        // delivers any AAWG RFCOMM stream — inbound or outbound. The
+        // whole bundle stays alive for the lifetime of `connect`.
+        let mut bundle = pair::open_adapter().await?;
         let adapter = &bundle.adapter;
 
         // 2. Wait for a paired AAW peer to appear. On first boot the
         // operator opens AA Wireless on the car and selects `smartcar`;
-        // BlueZ accepts Just Works via the agent above, the bond is
-        // cached, and this function returns. On subsequent boots the bond
-        // is already there and this returns immediately.
+        // BlueZ accepts Just Works via the agent, the bond is cached, and
+        // this function returns. On subsequent boots the bond is already
+        // there and this returns immediately.
         let device = pair::wait_for_aaw_device(adapter, cfg.pair_wait_timeout).await?;
         let car_addr = device.address();
-        pair::warm_connect(&device, cfg.bt_connect_timeout).await;
+        // Deliberately NOT calling `device.connect()` here — that's BlueZ's
+        // "ConnectAllProfiles" entry point, and it walks every UUID the
+        // peer advertises (HFP, HFP-AG, A2DP-sink, AVRCP, PBAP, MAP, …)
+        // attempting to bring each up. Cars expect those profiles to be
+        // *driven* by a real phone with handlers; arriving as a Class
+        // 0x6c020c phone and asking for HFP-AG that we don't speak made
+        // the Audi infotainment reboot mid-handshake (journal line:
+        // `a2dp-sink profile connect failed for <bmw>: Protocol not
+        // available` is the bluetoothd-side fingerprint). We only want
+        // AAWG, so we jump straight to the targeted ConnectProfile below.
 
-        // 3. SDP-discover the actual AAWG RFCOMM channel on the HU. Real
-        // cars don't follow aa-proxy-rs's convention of binding AAWG to
-        // channel 8 — the channel is assigned by their BlueZ-equivalent
-        // at register-time and can be anything. Audi MMI 4379, for
-        // example, had something other than AAWG on 8 (probably HSP),
-        // which is why the previous hardcoded-8 connect succeeded but
-        // then read-timed out: the wrong service was on the wire.
-        let channel = pair::discover_aawg_channel(car_addr).await?;
+        // 3. Trigger BlueZ to open the AAWG RFCOMM connection.
+        //
+        // `device.connect_profile(AAWG_UUID)` is the idiomatic way to do
+        // this with bluer: BlueZ resolves the channel from its on-disk
+        // SDP cache (written at pair time), opens the RFCOMM connection
+        // to whatever channel the car advertised, and delivers the
+        // resulting `Stream` to our registered Profile's `NewConnection`
+        // callback. We don't have to know the channel ourselves.
+        //
+        // Per BlueZ docs `ConnectProfile` blocks until the profile is
+        // fully connected, so once the await returns, the Stream is
+        // already queued in `aawg_streams`. We then `recv()` it with a
+        // bounded timeout to cover the rare case where the callback
+        // didn't fire after a successful return (e.g. car closed the
+        // RFCOMM link before NewConnection delivery).
+        //
+        // If the car initiates inbound RFCOMM *before* we initiate
+        // outbound, the Stream is already queued and `recv()` returns
+        // immediately — same code path either direction.
+        let stream = match bundle.aawg_streams.try_recv() {
+            Ok(s) => {
+                info!(%car_addr, "bt: AAWG stream from prior inbound connect");
+                s
+            }
+            Err(_) => {
+                pair::connect_aawg_profile(&device).await?;
+                tokio::time::timeout(cfg.rfcomm_connect_timeout, bundle.aawg_streams.recv())
+                    .await
+                    .map_err(|_| BtError::ConnectTimeout)?
+                    .ok_or_else(|| {
+                        BtError::Framing(
+                            "AAWG Profile channel closed without delivering a Stream".into(),
+                        )
+                    })?
+            }
+        };
+        info!(%car_addr, "bt: RFCOMM stream ready, starting AAW handshake");
 
-        // 4. RFCOMM client to the discovered channel.
-        let mut framed =
-            rfcomm::Framed::connect(car_addr, channel, cfg.rfcomm_connect_timeout).await?;
-        info!(channel, %car_addr, "bt: RFCOMM open to HU");
+        let mut framed = rfcomm::Framed::from_stream(stream);
 
         // 4. Phone-side AAW handshake.
         let outcome = handshake::run_phone_side(&mut framed).await?;
